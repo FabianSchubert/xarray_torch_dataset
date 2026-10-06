@@ -2,6 +2,8 @@
 
 Experimental development — this project is in an exploratory phase.
 
+See `STATUS.md` for the current project state and open design questions.
+
 ## Guidelines
 
 - **No tests for now.** Don't write tests or set up test infrastructure unless explicitly asked.
