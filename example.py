@@ -1,67 +1,29 @@
 """
-Minimal mockup: example user implementations of the xarray_torch_dataset
-base classes (Anchor, Sampler, View) and their use with XrDataset.
+Minimal mockup: building a dataset from points, views and a transform,
+including one custom view with non-contiguous selection logic.
 """
 
 import numpy as np
 import torch
 import xarray as xr
 
-from xarray_torch_dataset import Anchor, Sampler, View, XrDataset
+from xarray_torch_dataset import OffsetView, PointGrid, View, XrDataset
 
 # --------------------------------------------------------------------------
 # Example user implementations
 # --------------------------------------------------------------------------
 
 
-class TimeAnchor(Anchor):
-    """Every time step of a reference dataset is a valid point."""
+class SameWeekdayView(View):
+    """The same weekday in each of the `weeks` weeks before the point."""
 
-    def __init__(self, times):
-        self.times = times
+    def __init__(self, ds, variables, weeks):
+        super().__init__(ds, variables)
+        self.weeks = weeks
 
-    def __len__(self):
-        return len(self.times)
-
-    def __getitem__(self, i):
-        return {"time": self.times[i]}
-
-
-class StrideSampler(Sampler):
-    """Every `stride`-th anchor point, skipping the first `offset`."""
-
-    def __init__(self, anchor, stride=1, offset=0):
-        super().__init__(anchor)
-        self.stride, self.offset = stride, offset
-
-    def __len__(self):
-        return (len(self.anchor) - self.offset) // self.stride
-
-    def __getitem__(self, idx):
-        return self.anchor[self.offset + idx * self.stride]
-
-
-class HistoryView(View):
-    """The last `n` time steps of some variables, up to and including the point."""
-
-    def __init__(self, ds, variables, n):
-        super().__init__(ds)
-        self.variables, self.n = variables, n
-
-    def __call__(self, point):
-        end = self.ds.indexes["time"].get_loc(point["time"])
-        return self.ds[self.variables].isel(time=slice(end - self.n + 1, end + 1))
-
-
-class AtTimeView(View):
-    """Variables at exactly the point's time."""
-
-    def __init__(self, ds, variables):
-        super().__init__(ds)
-        self.variables = variables
-
-    def __call__(self, point):
-        return self.ds[self.variables].sel(time=point["time"])
+    def select(self, point):
+        back = np.arange(self.weeks, 0, -1) * np.timedelta64(7, "D")
+        return {"time": point["time"] - back}
 
 
 class ToTensors(torch.nn.Module):
@@ -92,19 +54,21 @@ if __name__ == "__main__":
         coords={"time": times},
     )  # e.g. xr.open_zarr("targets.zarr")
 
-    history = 4
-    anchor = TimeAnchor(inputs.time.values)
-    sampler = StrideSampler(anchor, stride=2, offset=history - 1)
+    # Every second day. Points too close to the start to have a full history
+    # are dropped by the dataset; no offset needs to be matched by hand.
+    points = PointGrid(time=inputs.time.values[::2])
 
     dataset = XrDataset(
-        sampler=sampler,
+        points=points,
         views={
-            "x": HistoryView(inputs, ["t2m", "u10"], n=history),
-            "y": AtTimeView(targets, ["precip"]),
+            "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": range(-3, 1)}),
+            "x_weekly": SameWeekdayView(inputs, ["t2m"], weeks=2),
+            "y": OffsetView(targets, ["precip"]),
         },
         transform=ToTensors(),
     )
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=4)
     batch = next(iter(loader))
-    print(len(dataset), {k: v.shape for k, v in batch.items()})
+    print(f"{len(dataset)} of {len(points)} points are valid")
+    print({k: v.shape for k, v in batch.items()})
