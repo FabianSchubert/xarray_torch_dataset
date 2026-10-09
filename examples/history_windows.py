@@ -1,44 +1,20 @@
 """
-Minimal mockup: building a dataset from points, views and a transform,
-including one custom view with non-contiguous selection logic.
+Windows along a time axis: a dataset built from points, views and a
+transform. The inputs are a four-step history and the same weekday in the
+two previous weeks; the target is the point's own time step.
 """
 
 import numpy as np
 import torch
 import xarray as xr
 
-from xarray_torch_dataset import OffsetView, PointGrid, View, XrDataset
-
-# --------------------------------------------------------------------------
-# Example user implementations
-# --------------------------------------------------------------------------
-
-
-class SameWeekdayView(View):
-    """The same weekday in each of the `weeks` weeks before the point."""
-
-    def __init__(self, ds, variables, weeks):
-        super().__init__(ds, variables)
-        self.weeks = weeks
-
-    def select(self, point):
-        back = np.arange(self.weeks, 0, -1) * np.timedelta64(7, "D")
-        return {"time": self.locate("time", point["time"] - back)}
-
-
-class ToTensors(torch.nn.Module):
-    """Stack each source's variables into one tensor (variables first)."""
-
-    def forward(self, sample):
-        return {
-            name: torch.from_numpy(ds.to_array().values).float()
-            for name, ds in sample.items()
-        }
-
-
-# --------------------------------------------------------------------------
-# Usage
-# --------------------------------------------------------------------------
+from xarray_torch_dataset import (
+    OffsetView,
+    PointGrid,
+    SameWeekdayView,
+    ToTensors,
+    XrDataset,
+)
 
 if __name__ == "__main__":
     times = np.arange("2020-01-01", "2020-02-01", dtype="datetime64[D]")

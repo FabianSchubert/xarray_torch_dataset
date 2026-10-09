@@ -30,9 +30,14 @@ The package lives in `src/xarray_torch_dataset/`; everything below is re-exporte
   - `fetch(point)`: reads the selection, after the same check. Override it for views that are not a selection (data-dependent choices, computed values).
 - **`XrDataset`** (`base.py`): a `torch.utils.data.Dataset`. At construction it keeps only the points for which every view is valid. `invalid="drop"` (the default) drops the rest silently, `invalid="raise"` reports them, and it always raises if no point survives.
 - **`PointGrid`** (`points.py`): all combinations of the given coordinate labels, computed lazily, e.g. `PointGrid(time=times, lat=lats)`.
-- **`OffsetView`** (`views.py`): the declarative view. `offsets={"time": [-3, -2, -1, 0]}` selects positional steps relative to the point, contiguous or not. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored. It accepts `missing` like every view; with `"fill"`, steps that leave the source come back as NaN.
+- **Ready-made views** live in the `views/` subpackage, one module per kind, and are re-exported from `xarray_torch_dataset.views` and from the package root.
+- **`OffsetView`** (`views/offset.py`): the declarative view. `offsets={"time": [-3, -2, -1, 0]}` selects positional steps relative to the point, contiguous or not. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored. It accepts `missing` like every view; with `"fill"`, steps that leave the source come back as NaN.
+- **`SameWeekdayView`** (`views/weekday.py`): the same weekday in each of the `weeks` weeks before the point, along `time`. It counts durations rather than steps, so it shows free-form selection logic through `locate`.
+- **`FindLatestForecastView`** (`views/forecast.py`): for forecast sources with `init_time` and `lead_time`. A point's init time and lead time give a valid time; among the source's init times within `init_time_offset_limits` of the point's init time, the view selects the most recent one that has a lead time reaching that valid time. This lets a coarser forecast (say, 3-hourly inits) be aligned with points on a finer grid.
 
-`example.py` builds a dataset on random in-memory data from two `OffsetView`s (a four-step history and a target) and a custom `SameWeekdayView` (the same weekday in the two previous weeks) that shows free-form selection logic. It prints:
+- **Ready-made transforms** live in the `transforms/` subpackage, laid out like `views/`. So far it holds **`ToTensors`** (`transforms/tensors.py`), which stacks each view's variables into one float tensor.
+
+The `examples/` folder has two scripts on random in-memory data. `examples/forecasts.py` aligns an hourly and a 3-hourly forecast with `FindLatestForecastView`, filling the points the coarser one cannot serve. `examples/history_windows.py` builds a dataset from two `OffsetView`s (a four-step history and a target) and a `SameWeekdayView` (the same weekday in the two previous weeks). It prints:
 
 ```
 9 of 16 points are valid
@@ -41,9 +46,9 @@ The package lives in `src/xarray_torch_dataset/`; everything below is re-exporte
 
 Other facts:
 
-- **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`.
+- **Dependencies**: `numpy`, `torch`, `xarray`, `matplotlib`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`.
 - **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
-- **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, validity, fetching, filling), `OffsetView`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook. The views in `examples/` are not covered.
+- **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, validity, fetching, filling), the three ready-made views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
 - The code has only been exercised on small in-memory data, never on zarr or dask-backed sources.
 
 ## Setting up on another machine
@@ -53,7 +58,7 @@ git clone https://github.com/FabianSchubert/xarray_torch_dataset.git
 cd xarray_torch_dataset
 uv sync                      # creates .venv from uv.lock
 uv run pre-commit install    # the git hook is per clone, not part of the repo
-uv run python example.py
+uv run python examples/history_windows.py
 ```
 
 Prerequisites that are per machine and not stored in the repo:
@@ -85,7 +90,7 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
 4. **Validation cost.** Validation is a Python loop over all points and views. It is fine at example size and has not been timed on millions of points.
 5. **Batched fetching.** Each `__getitem__` does one read per view. On zarr or dask-backed data with DataLoader workers that will likely be the bottleneck. The `select` split makes it possible to combine the indexers of a batch into one read per source (torch supports this through `__getitems__`), but combining gets awkward when points yield different shapes. This needs a prototype against a real zarr store before the contract is settled.
 6. **Rough edges of `missing="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
-7. **What a transform receives.** `fetch` returns an `xr.Dataset`, and the example's `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
+7. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
 
 ## Possible next steps
 

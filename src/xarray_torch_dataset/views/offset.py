@@ -1,4 +1,4 @@
-"""Ready-made views."""
+"""Windows of fixed positional offsets around a point."""
 
 from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Literal

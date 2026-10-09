@@ -3,7 +3,7 @@ import pytest
 import torch
 import xarray as xr
 
-from xarray_torch_dataset import OffsetView, PointGrid, XrDataset
+from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
 
 def history(source, **kwargs):
@@ -69,14 +69,8 @@ def test_transform_receives_the_sample(source, times):
 
 
 def test_batches_through_a_dataloader(source, times):
-    def to_tensors(sample):
-        return {
-            name: torch.from_numpy(ds.to_array().values).float()
-            for name, ds in sample.items()
-        }
-
     dataset = XrDataset(
-        PointGrid(time=times), {"x": history(source)}, transform=to_tensors
+        PointGrid(time=times), {"x": history(source)}, transform=ToTensors()
     )
     batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=5)))
 
