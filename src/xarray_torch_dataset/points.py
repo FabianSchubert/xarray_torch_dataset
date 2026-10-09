@@ -1,9 +1,7 @@
 """Ready-made collections of points."""
 
-from collections.abc import Sequence
-from typing import Any
-
 import numpy as np
+from numpy.typing import ArrayLike
 
 from xarray_torch_dataset.base import Point
 
@@ -15,7 +13,7 @@ class PointGrid:
     of the form ``{"time": ..., "lat": ...}``.
     """
 
-    def __init__(self, **coords: Sequence[Any]):
+    def __init__(self, **coords: ArrayLike):
         self.coords = {dim: np.asarray(labels) for dim, labels in coords.items()}
         self.shape = tuple(len(labels) for labels in self.coords.values())
 

@@ -42,16 +42,12 @@ class FindForecastView(View):
             self.init_times[:, np.newaxis] + self.lead_times[np.newaxis, :]
         )
 
+        # a limit of None means unbounded on that side
+        lower, upper = init_time_offset_limits or (None, None)
         self.init_time_offset_limits = (
-            [None, None]
-            if init_time_offset_limits is None
-            else list(init_time_offset_limits)
+            np.timedelta64(-1_000_000, "D") if lower is None else lower,
+            np.timedelta64(1_000_000, "D") if upper is None else upper,
         )
-
-        if self.init_time_offset_limits[0] is None:
-            self.init_time_offset_limits[0] = np.array(-1e6).astype("timedelta64[D]")
-        if self.init_time_offset_limits[1] is None:
-            self.init_time_offset_limits[1] = np.array(1e6).astype("timedelta64[D]")
 
     def select(self, point: Point) -> Indexers:
         indexers: dict[Hashable, Any] = {}
@@ -130,16 +126,16 @@ if __name__ == "__main__":
                 fc_1h,
                 ["t2m"],
                 init_time_offset_limits=(
-                    -np.array(2).astype("timedelta64[h]"),
-                    np.array(0).astype("timedelta64[h]"),
+                    np.timedelta64(-2, "h"),
+                    np.timedelta64(0, "h"),
                 ),
             ),
             "fc_3h": FindForecastView(
                 fc_3h,
                 ["t2m"],
                 init_time_offset_limits=(
-                    -np.array(2).astype("timedelta64[h]"),
-                    np.array(0).astype("timedelta64[h]"),
+                    np.timedelta64(-2, "h"),
+                    np.timedelta64(0, "h"),
                 ),
                 # points without a matching 3h forecast are kept, as NaN
                 missing="fill",
