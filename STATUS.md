@@ -1,6 +1,6 @@
 # Project status
 
-Snapshot as of 2026-10-08. This file records where the project stands and which design questions are open, so work can continue on another machine.
+Snapshot as of 2026-10-09. This file records where the project stands and which design questions are open, so work can continue on another machine.
 
 ## What this project is
 
@@ -12,7 +12,7 @@ point --View----> data from one xarray source   (one View per source)
 {name: data} --transform--> returned sample
 ```
 
-A point is a mapping from dimension names to coordinate labels, for example `{"time": np.datetime64("2020-01-05")}`. Views translate a point into a label-based selection on their source, and the dataset keeps only the points that every view can serve.
+A point is a mapping from dimension names to coordinate labels, for example `{"time": np.datetime64("2020-01-05")}`. Views translate a point into a positional selection on their source, and the dataset keeps only the points that every view can serve.
 
 ## Current state
 
@@ -20,12 +20,17 @@ The package lives in `src/xarray_torch_dataset/`; everything below is re-exporte
 
 - **`Point`** (`base.py`): type alias for a dict of coordinate labels.
 - **`Points`** (`base.py`): a protocol, not a base class. Anything with `__len__` and `__getitem__(i) -> Point` qualifies, so a plain list of dicts works.
-- **`View`** (`base.py`): abstract. Subclasses implement `select(point)`, which returns label indexers as accepted by `xr.Dataset.sel` and does no I/O; it may contain arbitrary logic and should raise a `LookupError` for points it cannot serve. The base class provides:
-  - `is_valid(point)`: dry-runs `select` and checks the returned labels against the source's index.
-  - `fetch(point)`: reads the selection. Override it for views that are not a selection (data-dependent choices, computed values).
+- **`View`** (`base.py`): abstract. Subclasses implement `select(point)`, which returns positional indexers as accepted by `xr.Dataset.isel` and does no I/O; it may contain arbitrary logic. A position outside the source (by convention `-1`) marks missing data; negative positions never count from the end. What happens to a point with missing data is set per view by `missing`:
+  - `missing="drop"` (the default): the point is invalid for this view. Raising a `LookupError` from `select` has the same effect.
+  - `missing="fill"`: the point is always valid, and `fetch` returns data of the full expected shape with NaN at the missing positions (so a window can be partly filled). Coordinates of missing entries are masked too (NaN or NaT). `select` must not raise a `LookupError` in this mode, because then the shape of the fill would be unknown; the dataset reports that at construction.
+
+  The base class provides:
+  - `locate(dim, labels)`: turns coordinate labels into positions. A scalar label gives a scalar position, which drops the dimension. A missing label raises a `LookupError` with `missing="drop"` and gives `-1` with `missing="fill"`.
+  - `is_valid(point)`: dry-runs `select` and, with `missing="drop"`, checks that every returned position lies inside the source, including slice bounds.
+  - `fetch(point)`: reads the selection, after the same bounds check. Override it for views that are not a selection (data-dependent choices, computed values).
 - **`XrDataset`** (`base.py`): a `torch.utils.data.Dataset`. At construction it keeps only the points for which every view is valid. `invalid="drop"` (the default) drops the rest silently, `invalid="raise"` reports them, and it always raises if no point survives.
 - **`PointGrid`** (`points.py`): all combinations of the given coordinate labels, computed lazily, e.g. `PointGrid(time=times, lat=lats)`.
-- **`OffsetView`** (`views.py`): the declarative view. `offsets={"time": [-3, -2, -1, 0]}` selects positional steps relative to the point, contiguous or not. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored.
+- **`OffsetView`** (`views.py`): the declarative view. `offsets={"time": [-3, -2, -1, 0]}` selects positional steps relative to the point, contiguous or not. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored. It accepts `missing` like every view; with `"fill"`, steps that leave the source come back as NaN.
 
 `example.py` builds a dataset on random in-memory data from two `OffsetView`s (a four-step history and a target) and a custom `SameWeekdayView` (the same weekday in the two previous weeks) that shows free-form selection logic. It prints:
 
@@ -67,16 +72,20 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
 - **Points became concrete** (a dict of coordinate labels). With opaque points the framework could not validate, align or batch anything, and `XrDataset` was little more than a dict comprehension.
 - **Views were split into `select` and `fetch`.** Selection logic stays unrestricted, but because it is separate from reading, the dataset can check up front which points a view can serve. This replaced the hand-matched `offset=history - 1` between sampler and view, which failed silently when wrong.
 - **Validity is owned by the views and enforced by the dataset.** A label missing in one source is now caught at construction instead of producing a wrong window at fetch time.
+- **`select` returns positions, not labels** (`isel` instead of `sel`). The ready-made views compute positions anyway, dimensions without coordinates become selectable, slices can be bounds-checked, and integer indexers are easier to combine for batched reads. The speed gain itself is small (roughly 50 to 130 µs per fetch on in-memory data). The price is that views must look labels up themselves, through `locate`, and that the base class has to guard against negative positions.
+
+- **Missing data is marked by position, not by exception.** With `missing="fill"` a view has to say what shape the missing data would have had, and out-of-bounds positions carry that for free, including windows that are only partly missing. An exception carries no shape, which is why `LookupError` only works with `missing="drop"`.
 
 ## Open questions
 
 1. **Is `PointGrid` worth having?** For one dimension a list comprehension does the same job; it only earns its place for multi-dimensional grids.
 2. **Default for invalid points.** Dropping suits the history-margin case but can hide a misaligned source. The alternative is to default to `invalid="raise"`.
-3. **Slices returned from `select` are not validated**, because label slices in xarray shrink silently instead of failing. Returning explicit labels is the checked path. Slices could be forbidden, or checked some other way.
+3. **Slice validation is minimal.** Since `select` returns positions, slice bounds are checked against the source size, but empty or reversed slices are not rejected.
 4. **Steps versus durations.** `OffsetView` counts positional steps along the source's index. On a time axis with gaps, or across sources with different resolutions, a step window covers the wrong period without any error. A duration-based view (or option) is not designed yet.
 5. **Validation cost.** Validation is a Python loop over all points and views. It is fine at example size and has not been timed on millions of points.
 6. **Batched fetching.** Each `__getitem__` does one read per view. On zarr or dask-backed data with DataLoader workers that will likely be the bottleneck. The `select` split makes it possible to combine the indexers of a batch into one read per source (torch supports this through `__getitems__`), but combining gets awkward when points yield different shapes. This needs a prototype against a real zarr store before the contract is settled.
-7. **What a transform receives.** `fetch` returns an `xr.Dataset`, and the example's `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
+7. **Rough edges of `missing="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`. A view that does arithmetic on a position returned by `locate` must handle `-1` itself, as `OffsetView` does.
+8. **What a transform receives.** `fetch` returns an `xr.Dataset`, and the example's `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
 
 ## Possible next steps
 

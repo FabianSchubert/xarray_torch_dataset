@@ -23,7 +23,7 @@ class SameWeekdayView(View):
 
     def select(self, point):
         back = np.arange(self.weeks, 0, -1) * np.timedelta64(7, "D")
-        return {"time": point["time"] - back}
+        return {"time": self.locate("time", point["time"] - back)}
 
 
 class ToTensors(torch.nn.Module):
