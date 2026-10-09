@@ -45,9 +45,9 @@ class OffsetView(View):
                 indexers[dim] = position
                 continue
             offsets = self.offsets[dim]
-            # a label the source lacks (position -1) has no neighbours either
+            # a label the source lacks has no neighbours either
             indexers[dim] = (
-                position + offsets if position >= 0 else np.full_like(offsets, -1)
+                np.full_like(offsets, -1) if position is None else position + offsets
             )
         absent = set(self.offsets) - set(indexers)
         if absent:

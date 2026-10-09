@@ -64,9 +64,9 @@ class FindForecastView(View):
         )
 
         if len(init_idx) == 0:
-            # no forecast in the init time window: position -1 marks missing
-            # data, so the point is dropped or filled with NaN
-            return {"init_time": -1, "lead_time": -1}
+            # no forecast in the init time window: None marks a missing
+            # position, so the point is dropped or filled with NaN
+            return {"init_time": None, "lead_time": None}
 
         # get the matching candidate with the most recent init time
         # (init_idx and lead_idx are parallel arrays of candidate positions)

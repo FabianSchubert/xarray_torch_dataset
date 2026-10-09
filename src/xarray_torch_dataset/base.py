@@ -38,9 +38,10 @@ class View(ABC):
     no I/O. Keeping selection separate from reading is what lets the dataset
     check up front which points a view can serve.
 
-    With ``missing="drop"`` a point is invalid if anything it selects is
-    missing. With ``missing="fill"`` every point is valid and whatever is
-    missing is returned as NaN.
+    A position that is ``None`` or outside the source means that data is
+    missing. With ``missing="drop"`` such a point is invalid. With
+    ``missing="fill"`` every point is valid and whatever is missing is
+    returned as NaN.
     """
 
     def __init__(
@@ -54,89 +55,82 @@ class View(ABC):
 
     @abstractmethod
     def select(self, point: Point) -> Indexers:
-        """Return positional indexers, as accepted by ``xr.Dataset.isel``.
+        """Return positions per dimension, as accepted by ``xr.Dataset.isel``.
 
-        Use `locate` to turn coordinate labels into positions. Positions
-        outside the source mark missing data, by convention ``-1``: negative
-        ones do not count from the end. Returning such positions, rather
-        than raising, keeps the shape of the selection known, which
-        ``missing="fill"`` needs.
+        Positions are integers or integer arrays, not slices. Use `locate`
+        to turn coordinate labels into positions.
 
-        A ``LookupError`` also marks the point as one the view cannot
-        serve, but only works with ``missing="drop"``.
+        Missing data is marked by position: ``None`` for a single position,
+        and a position outside the source (by convention ``-1``) for an
+        entry of an array. Negative positions do not count from the end.
+        Mark missing data this way rather than by raising, so that the
+        shape of the selection stays known.
         """
 
     def locate(self, dim: Hashable, labels: Any) -> Any:
         """Positions of coordinate labels along `dim`.
 
         A scalar label gives a scalar position, which drops the dimension
-        when selected. A missing label raises a ``LookupError`` with
-        ``missing="drop"`` and gives position ``-1`` with ``missing="fill"``.
+        when selected, or ``None`` if the source has no such label, so that
+        arithmetic on a failed lookup raises instead of giving a position.
+
+        Several labels give an array of positions, with ``-1`` for labels
+        the source lacks. Check for those before doing arithmetic on it.
         """
         index = self.ds.indexes[dim]
-        fill = self.missing == "fill"
         if np.ndim(labels) == 0:
             try:
                 return index.get_loc(labels)
             except KeyError:
-                if fill:
-                    return -1
-                raise
-        labels = np.asarray(labels)
-        positions = index.get_indexer(labels)
-        if not fill and (positions < 0).any():
-            raise LookupError(f"Source has no {dim!r} labels {labels[positions < 0]}.")
-        return positions
+                return None
+        return index.get_indexer(labels)
 
     def is_valid(self, point: Point) -> bool:
         """Whether the view can serve the point.
 
-        With ``missing="drop"``: `select(point)` succeeds and stays inside
-        the source. With ``missing="fill"``: always, provided `select`
-        does not raise.
+        Always with ``missing="fill"``; otherwise only if everything that
+        `select(point)` asks for exists.
         """
-        try:
-            indexers = self.select(point)
-        except LookupError as err:
-            if self.missing == "fill":
-                raise ValueError(
-                    f"{type(self).__name__}.select raised for {point!r}. With "
-                    'missing="fill" it has to return position -1 for missing '
-                    "data instead, so that the shape of the fill is known."
-                ) from err
-            return False
-        return self.missing == "fill" or self._in_bounds(indexers)
-
-    def _in_bounds(self, indexers: Indexers) -> bool:
-        """Whether all positions lie in ``[0, size)`` of their dimension.
-
-        ``isel`` would wrap negative positions and silently shorten slices
-        that leave the source, so both count as out of bounds here. Slice
-        bounds may be ``None`` or equal the size.
-        """
-        for dim, positions in indexers.items():
-            size = self.ds.sizes[dim]
-            if isinstance(positions, slice):
-                bounds = (positions.start, positions.stop)
-                if any(b is not None and not 0 <= b <= size for b in bounds):
-                    return False
-                continue
-            positions = np.asarray(positions)
-            if positions.size and (positions.min() < 0 or positions.max() >= size):
-                return False
-        return True
+        if self.missing == "fill":
+            return True
+        exists = self._exists(self.select(point))
+        return all(e.all() for e in exists.values())
 
     def fetch(self, point: Point) -> xr.Dataset:
         """Read the selection. Override for views that are not a selection."""
         indexers = self.select(point)
-        if self._in_bounds(indexers):
+        exists = self._exists(indexers)
+        if all(e.all() for e in exists.values()):
             return self.ds.isel(indexers)
         if self.missing == "fill":
-            return self._fetch_filled(indexers)
+            return self._fill(indexers, exists)
         raise IndexError(f"Selection for {point!r} leaves the source.")
 
-    def _fetch_filled(self, indexers: Indexers) -> xr.Dataset:
-        """Read the selection, with NaN wherever a position is out of bounds.
+    def _exists(self, indexers: Indexers) -> dict[Hashable, np.ndarray]:
+        """Per dimension, which of the positions lie inside the source.
+
+        ``None`` does not, and neither do negative positions, although
+        ``isel`` would accept those and count from the end. A scalar
+        position gives a 0-d bool array.
+        """
+        exists = {}
+        for dim, positions in indexers.items():
+            if positions is None:
+                exists[dim] = np.array(False)
+                continue
+            if isinstance(positions, slice):
+                raise TypeError(
+                    f"{type(self).__name__}.select returned a slice for {dim!r}. "
+                    "Return integer positions instead, e.g. np.arange(start, stop)."
+                )
+            positions = np.asarray(positions)
+            exists[dim] = (positions >= 0) & (positions < self.ds.sizes[dim])
+        return exists
+
+    def _fill(
+        self, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
+    ) -> xr.Dataset:
+        """Read the selection, with NaN wherever a position is missing.
 
         The result has the shape a complete selection would have. Along a
         dimension with missing positions, the coordinates of those entries
@@ -147,38 +141,26 @@ class View(ABC):
         the stand-ins. Example on a 31-step ``time`` axis::
 
             indexers  {"time": [-1, 0, 1, 31]}
-            in_source {"time": [False, True, True, False]}
+            exists    {"time": [False, True, True, False]}
             readable  {"time": [0, 0, 1, 0]}      # position 0 stands in
             result    time steps [NaN, step 0, step 1, NaN]
         """
-        # Step 1: per dimension, find which positions exist in the source
-        # and build indexers that `isel` can read without wrapping.
-        readable = {}  # dim -> positions, with 0 in place of missing ones
-        in_source = {}  # dim -> bool per position; only dims with gaps
-        for dim, positions in indexers.items():
-            size = self.ds.sizes[dim]
-            if isinstance(positions, slice):
-                # `isel` would cut a slice off at the edge of the source.
-                # Spelling it out keeps the positions beyond the edge.
-                positions = self._slice_positions(positions, size)
-            # A scalar position becomes a 0-d array here: `exists` is then a
-            # single bool, and `isel` still drops the dimension.
-            positions = np.asarray(positions)
-            exists = (positions >= 0) & (positions < size)
-            readable[dim] = np.where(exists, positions, 0)
-            if not exists.all():
-                in_source[dim] = exists
-
-        # Step 2: read. The shape is already final, but the entries at
+        # Step 1: read. The shape is already final, but the entries at
         # missing positions hold the data of position 0.
+        readable = {
+            dim: 0 if pos is None else np.where(exists[dim], pos, 0)
+            for dim, pos in indexers.items()
+        }
         out = self.ds.isel(readable)
 
-        # Step 3: blank out those entries, one dimension at a time.
-        for dim, exists in in_source.items():
+        # Step 2: blank out those entries, one dimension at a time.
+        for dim, present in exists.items():
+            if present.all():
+                continue
             # A mask along `dim` only, which `where` broadcasts over all
-            # other dimensions. For a scalar position `exists` is 0-d, so
+            # other dimensions. For a scalar position `present` is 0-d, so
             # the mask has no dimension and blanks the whole sample.
-            mask = xr.DataArray(exists, dims=[dim] * exists.ndim)
+            mask = xr.DataArray(present, dims=[dim] * present.ndim)
             # `where` keeps values where the mask is True and puts NaN
             # elsewhere, but only in data variables...
             out = out.where(mask)
@@ -191,24 +173,6 @@ class View(ABC):
                 {name: out[name].where(mask).variable for name in along_dim}
             )
         return out
-
-    @staticmethod
-    def _slice_positions(positions: slice, size: int) -> np.ndarray:
-        """The positions a slice stands for, including those out of bounds.
-
-        ``slice(28, 33)`` gives ``[28, 29, 30, 31, 32]`` whatever the size.
-        Open bounds run to the end of the source in the direction of the
-        step. Negative bounds are positions before the start, not counted
-        from the end.
-        """
-        step = positions.step or 1
-        if step > 0:
-            default_start, default_stop = 0, size
-        else:
-            default_start, default_stop = size - 1, -1
-        start = default_start if positions.start is None else positions.start
-        stop = default_stop if positions.stop is None else positions.stop
-        return np.arange(start, stop, step)
 
 
 class XrDataset(Dataset):
