@@ -1,5 +1,5 @@
-from collections.abc import Hashable, Sequence
-from typing import Any, Literal
+from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 import torch
@@ -25,7 +25,16 @@ def fancy_noise(shape, betas, rng=None):
     return out / out.std()
 
 
-class FindForecastView(View):
+class FindLatestForecastView(View):
+    """The latest forecast for the point's valid time.
+
+    A point has an init time and a lead time, which add up to a valid time.
+    Among the source's init times within `init_time_offset_limits` of the
+    point's init time (lower and upper offset, ``None`` for no limit), the
+    view selects the most recent one that has a lead time reaching the same
+    valid time.
+    """
+
     def __init__(
         self,
         ds: xr.Dataset,
@@ -35,12 +44,7 @@ class FindForecastView(View):
         missing: Literal["drop", "fill"] = "drop",
     ) -> None:
         super().__init__(ds, variables, missing)
-
-        self.init_times = ds.init_time.values
-        self.lead_times = ds.lead_time.values
-        self.valid_times = (
-            self.init_times[:, np.newaxis] + self.lead_times[np.newaxis, :]
-        )
+        self.init_times = self.ds.init_time.values
 
         # a limit of None means unbounded on that side
         lower, upper = init_time_offset_limits or (None, None)
@@ -50,33 +54,25 @@ class FindForecastView(View):
         )
 
     def select(self, point: Point) -> Indexers:
-        indexers: dict[Hashable, Any] = {}
+        valid_time = point["init_time"] + point["lead_time"]
 
-        ref_init_time = point["init_time"]
-        ref_lead_time = point["lead_time"]
-        ref_valid_time = ref_init_time + ref_lead_time
+        # positions of the init times inside the window around the point's
+        lower, upper = self.init_time_offset_limits
+        offsets = self.init_times - point["init_time"]
+        candidates = np.flatnonzero((offsets >= lower) & (offsets <= upper))
 
-        it_offset = self.init_times[:, np.newaxis] - ref_init_time
-        init_idx, lead_idx = np.where(
-            (ref_valid_time == self.valid_times)
-            & (it_offset >= self.init_time_offset_limits[0])
-            & (it_offset <= self.init_time_offset_limits[1])
-        )
-
-        if len(init_idx) == 0:
-            # no forecast in the init time window: None marks a missing
-            # position, so the point is dropped or filled with NaN
+        # the lead time each candidate needs to reach the valid time, as a
+        # position along lead_time (-1 where the source has no such lead)
+        leads = self.locate("lead_time", valid_time - self.init_times[candidates])
+        found = leads >= 0
+        if not found.any():
+            # None marks a missing position, so the point is dropped or
+            # filled with NaN
             return {"init_time": None, "lead_time": None}
 
-        # get the matching candidate with the most recent init time
-        # (init_idx and lead_idx are parallel arrays of candidate positions)
-        most_recent_candidate = np.argmax(self.init_times[init_idx])
-        # note that we are not checking for whether there are duplicate
-        # hits
-        indexers["init_time"] = init_idx[most_recent_candidate]
-        indexers["lead_time"] = lead_idx[most_recent_candidate]
-
-        return indexers
+        candidates, leads = candidates[found], leads[found]
+        latest = np.argmax(self.init_times[candidates])
+        return {"init_time": candidates[latest], "lead_time": leads[latest]}
 
 
 class ToTensors(torch.nn.Module):
@@ -122,7 +118,7 @@ if __name__ == "__main__":
     dataset = XrDataset(
         points=points,
         views={
-            "fc_1h": FindForecastView(
+            "fc_1h": FindLatestForecastView(
                 fc_1h,
                 ["t2m"],
                 init_time_offset_limits=(
@@ -130,7 +126,7 @@ if __name__ == "__main__":
                     np.timedelta64(0, "h"),
                 ),
             ),
-            "fc_3h": FindForecastView(
+            "fc_3h": FindLatestForecastView(
                 fc_3h,
                 ["t2m"],
                 init_time_offset_limits=(
