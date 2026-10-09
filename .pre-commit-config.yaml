@@ -21,3 +21,10 @@ repos:
         types_or: [python, pyi]
         pass_filenames: false
         require_serial: true
+      - id: pytest
+        name: pytest
+        entry: uv run pytest -q
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true

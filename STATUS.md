@@ -42,8 +42,8 @@ The package lives in `src/xarray_torch_dataset/`; everything below is re-exporte
 Other facts:
 
 - **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`.
-- **Tooling**: pre-commit runs `ruff check --fix`, `ruff format` and `mypy` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
-- **No tests**, by decision (see `CLAUDE.md`). Returned values were spot-checked by hand on a small known array, including non-contiguous offsets and a 2-D grid.
+- **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
+- **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, validity, fetching, filling), `OffsetView`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook. The views in `examples/` are not covered.
 - The code has only been exercised on small in-memory data, never on zarr or dask-backed sources.
 
 ## Setting up on another machine

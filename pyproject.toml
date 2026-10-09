@@ -19,11 +19,15 @@ build-backend = "uv_build"
 dev = [
     "mypy>=2.4.0",
     "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
     "ruff>=0.16.10",
 ]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.mypy]
 files = ["src"]
