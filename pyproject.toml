@@ -1,7 +1,7 @@
 [project]
 name = "xarray-torch-dataset"
 version = "0.1.0"
-description = "Add your description here"
+description = "PyTorch datasets on top of xarray, built from small, swappable parts"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

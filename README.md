@@ -1,0 +1,123 @@
+# xarray_torch_dataset
+
+PyTorch datasets on top of xarray, built from small, swappable parts.
+
+This is an experiment. The interfaces are still changing; `STATUS.md` records the current state, the design decisions and the open questions.
+
+## The idea
+
+A sample is described in three steps:
+
+```
+index --points--> point (a dict of coordinate labels)
+point --View----> data from one xarray source   (one View per source)
+{name: data} --transform--> returned sample
+```
+
+- A **point** says where a sample is, as coordinate labels: `{"time": np.datetime64("2020-01-05")}`.
+- A **view** says what to read from one xarray source for a point, for example the four time steps up to the point. Each source gets its own view, so sources with different grids or resolutions can be combined.
+- A **transform** turns the fetched xarray data into what the model needs, usually tensors.
+
+Views only compute positions; they do not read. The dataset can therefore check at construction which points every view can serve, and it keeps only those.
+
+## Example
+
+```python
+import numpy as np
+import torch
+import xarray as xr
+
+from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
+
+times = np.arange("2020-01-01", "2020-02-01", dtype="datetime64[D]")
+dims = ("time", "lat", "lon")
+inputs = xr.Dataset(
+    {"t2m": (dims, np.random.rand(31, 8, 8)), "u10": (dims, np.random.rand(31, 8, 8))},
+    coords={"time": times},
+)
+targets = xr.Dataset({"precip": (dims, np.random.rand(31, 8, 8))}, coords={"time": times})
+
+dataset = XrDataset(
+    points=PointGrid(time=times),
+    views={
+        # the point's time step and the three before it
+        "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": [-3, -2, -1, 0]}),
+        # the point's time step only
+        "y": OffsetView(targets, ["precip"]),
+    },
+    transform=ToTensors(),
+)
+
+print(len(dataset))  # 28: the first three days have no full history
+batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=4)))
+print({name: tensor.shape for name, tensor in batch.items()})
+# {'x': torch.Size([4, 2, 4, 8, 8]), 'y': torch.Size([4, 1, 8, 8])}
+```
+
+`examples/` has two longer scripts: `history_windows.py` and `forecasts.py`.
+
+## The parts
+
+**Points.** Anything with `__len__` and `__getitem__(i)` that returns a point will do, including a plain list of dicts. `PointGrid(time=times, lat=lats)` gives every combination of the labels without building the list.
+
+**Views.** Three are included:
+
+| View | Selects |
+|---|---|
+| `OffsetView` | Fixed positional offsets from the point, such as a history window. Dimensions without offsets are selected at exactly the point's label. |
+| `SameWeekdayView` | The same weekday in each of the weeks before the point. |
+| `FindLatestForecastView` | From a forecast source with `init_time` and `lead_time`, the most recent forecast for the point's valid time. This aligns, say, a 3-hourly forecast with hourly points. |
+
+**Missing data.** Each view takes `missing="drop"` (the default) or `missing="fill"`. With `"drop"`, a point whose selection leaves the source is not part of the dataset. With `"fill"`, the point is kept and whatever is missing comes back as NaN, in the shape a complete selection would have.
+
+`XrDataset(..., invalid="raise")` raises instead of dropping points silently, which helps to catch a misaligned source.
+
+**Transforms.** A transform receives `{view name: xr.Dataset}`. `ToTensors` stacks the variables of each view into one float tensor, variables first.
+
+## Writing a view
+
+Subclass `View` and implement `select`, which returns positions per dimension as `xr.Dataset.isel` accepts them. `locate` turns coordinate labels into positions.
+
+```python
+import numpy as np
+
+from xarray_torch_dataset import View
+
+
+class DayBeforeView(View):
+    """The source's value one day before the point."""
+
+    def select(self, point):
+        return {"time": self.locate("time", point["time"] - np.timedelta64(1, "D"))}
+```
+
+A label that the source lacks gives the position `None` (or `-1` inside an array of positions), which marks the data as missing. `select` should mark missing data this way rather than raise, and it should not read any data.
+
+## Reading from zarr
+
+Open stores without dask:
+
+```python
+ds = xr.open_dataset("data.zarr", engine="zarr", chunks=None)
+```
+
+`xr.open_zarr` and `chunks={}` give dask-backed data, which has two drawbacks here:
+
+- **It can hang.** If the main process reads from a dask-backed dataset (looking at `dataset[0]` is enough) and a `DataLoader` then starts workers by forking, which is the default on Linux, the first batch never arrives.
+- **It was not faster.** In the benchmarks, dask was slower on small and medium chunks and about equal on large ones.
+
+If you need dask, start the workers with `DataLoader(..., multiprocessing_context="forkserver")` or use dask's synchronous scheduler (`dask.config.set(scheduler="synchronous")`).
+
+A `DataLoader` that batches reads each view's data once per batch rather than once per sample, without any setting. The benchmark results are in `STATUS.md`, and the scripts in `benchmarks/`.
+
+## Development
+
+```bash
+git clone https://github.com/FabianSchubert/xarray_torch_dataset.git
+cd xarray_torch_dataset
+uv sync
+uv run pre-commit install
+uv run pytest
+```
+
+Pre-commit runs `ruff`, `mypy` and `pytest`. `STATUS.md` has more on the setup.
