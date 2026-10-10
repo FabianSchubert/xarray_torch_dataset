@@ -266,6 +266,8 @@ class XrDataset(Dataset):
         self.points = points
         self.views = views
         self.transform = transform
+        if not len(points):
+            raise ValueError("There are no points.")
         self.indices = []
         self.n_rejected = dict.fromkeys(views, 0)
         for i in range(len(points)):
@@ -277,13 +279,15 @@ class XrDataset(Dataset):
             else:
                 self.indices.append(i)
 
-        by_view = ", ".join(f"{n} by {name!r}" for name, n in self.n_rejected.items())
-        if not self.indices:
-            raise ValueError(f"No point is accepted by all views ({by_view}).")
-        if rejected == "raise" and len(self.indices) < len(points):
+        n_rejected = len(points) - len(self.indices)
+        if not self.indices or (rejected == "raise" and n_rejected):
+            how_many = f"{n_rejected} of" if self.indices else "All"
+            by_view = ", ".join(
+                f"{n} by view {name!r}" for name, n in self.n_rejected.items() if n
+            )
             raise ValueError(
-                f"{len(points) - len(self.indices)} of {len(points)} points "
-                f"were rejected ({by_view})."
+                f"{how_many} {len(points)} points were rejected: {by_view}. "
+                "(Each point is counted for the first view that rejected it.)"
             )
 
     def __len__(self):

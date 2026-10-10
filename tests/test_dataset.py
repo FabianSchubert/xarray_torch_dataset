@@ -41,14 +41,19 @@ def test_rejected_points_are_counted_for_the_first_view_that_rejects(source, tim
 
 
 def test_rejected_points_can_be_reported_instead(source, times):
-    with pytest.raises(ValueError, match=r"2 of 31 points were rejected \(2 by 'x'\)"):
+    with pytest.raises(ValueError, match="2 of 31 points were rejected: 2 by view 'x'"):
         XrDataset(PointGrid(time=times), {"x": history(source)}, rejected="raise")
 
 
 def test_dataset_without_accepted_points_is_an_error(source):
     points = [{"time": np.datetime64("2021-01-01")}]
-    with pytest.raises(ValueError, match=r"No point .* \(1 by 'x'\)"):
+    with pytest.raises(ValueError, match="All 1 points were rejected: 1 by view 'x'"):
         XrDataset(points, {"x": history(source)})
+
+
+def test_dataset_without_points_is_an_error(source):
+    with pytest.raises(ValueError, match="no points"):
+        XrDataset([], {"x": history(source)})
 
 
 def test_filling_view_never_drops_a_point(source, times):
