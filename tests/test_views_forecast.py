@@ -93,12 +93,12 @@ def test_point_without_a_matching_forecast_is_missing(three_hourly):
     unreachable = point(init=2, lead=24)  # would need a 26 h lead from hour 0
 
     assert view.select(unreachable) == {"init_time": None, "lead_time": None}
-    assert not view.is_valid(unreachable)
+    assert not view.accepts(unreachable)
 
 
 def test_fill_returns_a_nan_field_for_a_missing_forecast(three_hourly):
     view = FindLatestForecastView(
-        three_hourly, init_time_offset_limits=WINDOW, missing="fill"
+        three_hourly, init_time_offset_limits=WINDOW, unavailable="fill"
     )
     out = view.fetch(point(init=2, lead=24))
 
@@ -156,11 +156,11 @@ def test_dataset_drops_the_points_a_coarser_forecast_cannot_serve(three_hourly):
     assert len(dataset) == len(points) - 16 * (1 + 2)
 
 
-@pytest.mark.parametrize("missing", ["drop", "fill"])
-def test_fetch_many_matches_fetch(three_hourly, missing):
-    view = FindLatestForecastView(three_hourly, None, WINDOW, missing=missing)
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_fetch_many_matches_fetch(three_hourly, unavailable):
+    view = FindLatestForecastView(three_hourly, None, WINDOW, unavailable=unavailable)
     points = [point(init=6, lead=5), point(init=8, lead=5), point(init=20, lead=1)]
-    if missing == "fill":
+    if unavailable == "fill":
         points.append(point(init=2, lead=24))  # no matching forecast
 
     for data, p in zip(view.fetch_many(points), points, strict=True):

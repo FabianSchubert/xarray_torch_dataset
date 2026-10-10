@@ -39,19 +39,19 @@ class View(ABC):
     check up front which points a view can serve.
 
     A position that is ``None`` or outside the source means that data is
-    missing. With ``missing="drop"`` such a point is invalid. With
-    ``missing="fill"`` every point is valid and whatever is missing is
-    returned as NaN.
+    missing. With ``unavailable="reject"`` the view rejects such a point.
+    With ``unavailable="fill"`` it accepts every point and returns whatever
+    is missing as NaN.
     """
 
     def __init__(
         self,
         ds: xr.Dataset,
         variables: Sequence[str] | None = None,
-        missing: Literal["drop", "fill"] = "drop",
+        unavailable: Literal["reject", "fill"] = "reject",
     ):
         self.ds = ds if variables is None else ds[list(variables)]
-        self.missing = missing
+        self.unavailable = unavailable
 
     @abstractmethod
     def select(self, point: Point) -> Indexers:
@@ -85,13 +85,13 @@ class View(ABC):
                 return None
         return index.get_indexer(labels)
 
-    def is_valid(self, point: Point) -> bool:
-        """Whether the view can serve the point.
+    def accepts(self, point: Point) -> bool:
+        """Whether the view can serve the point, as opposed to rejecting it.
 
-        Always with ``missing="fill"``; otherwise only if everything that
+        Always with ``unavailable="fill"``; otherwise only if everything that
         `select(point)` asks for exists.
         """
-        if self.missing == "fill":
+        if self.unavailable == "fill":
             return True
         exists = self._exists(self.select(point))
         return all(e.all() for e in exists.values())
@@ -169,7 +169,7 @@ class View(ABC):
         """
         if all(e.all() for e in exists.values()):
             return source.isel(indexers)
-        if self.missing == "fill":
+        if self.unavailable == "fill":
             return self._fill(source, indexers, exists)
         raise IndexError(f"Selection for {point!r} leaves the source.")
 
@@ -246,10 +246,10 @@ class View(ABC):
 
 
 class XrDataset(Dataset):
-    """Serves, for each valid point, ``{name: view.fetch(point)}``.
+    """Serves, for each accepted point, ``{name: view.fetch(point)}``.
 
-    Points that some view cannot serve are dropped at construction, or
-    reported if ``invalid="raise"``.
+    Points that some view rejects are dropped at construction, or
+    reported if ``rejected="raise"``.
 
     A DataLoader that batches asks for a whole batch at once, which costs
     one read per view instead of one per sample (see `View.fetch_many`).
@@ -260,7 +260,7 @@ class XrDataset(Dataset):
         points: Points,
         views: Mapping[str, View],
         transform: Callable | None = None,
-        invalid: Literal["drop", "raise"] = "drop",
+        rejected: Literal["drop", "raise"] = "drop",
     ):
         self.points = points
         self.views = views
@@ -268,13 +268,13 @@ class XrDataset(Dataset):
         self.indices = [
             i
             for i in range(len(points))
-            if all(view.is_valid(points[i]) for view in views.values())
+            if all(view.accepts(points[i]) for view in views.values())
         ]
-        n_invalid = len(points) - len(self.indices)
+        n_rejected = len(points) - len(self.indices)
         if not self.indices:
-            raise ValueError("No point can be served by all views.")
-        if invalid == "raise" and n_invalid:
-            raise ValueError(f"{n_invalid} of {len(points)} points are invalid.")
+            raise ValueError("No point is accepted by all views.")
+        if rejected == "raise" and n_rejected:
+            raise ValueError(f"{n_rejected} of {len(points)} points were rejected.")
 
     def __len__(self):
         return len(self.indices)

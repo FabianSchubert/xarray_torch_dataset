@@ -25,9 +25,9 @@ class FindLatestForecastView(View):
         variables: Sequence[str] | None = None,
         init_time_offset_limits: tuple[np.timedelta64 | None, np.timedelta64 | None]
         | None = None,
-        missing: Literal["drop", "fill"] = "drop",
+        unavailable: Literal["reject", "fill"] = "reject",
     ) -> None:
-        super().__init__(ds, variables, missing)
+        super().__init__(ds, variables, unavailable)
         self.init_times = self.ds.init_time.values
 
         # a limit of None means unbounded on that side

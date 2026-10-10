@@ -26,21 +26,21 @@ def test_point_entries_without_an_index_are_ignored(source, times):
     xr.testing.assert_identical(view.fetch(point), source.sel(time=times[7]))
 
 
-def test_points_whose_window_leaves_the_source_are_invalid(source, times):
+def test_points_whose_window_leaves_the_source_are_rejected(source, times):
     view = OffsetView(source, offsets={"time": OFFSETS})
-    valid = [view.is_valid({"time": t}) for t in times]
-    assert valid == [3 <= k <= 28 for k in range(len(times))]
+    accepted = [view.accepts({"time": t}) for t in times]
+    assert accepted == [3 <= k <= 28 for k in range(len(times))]
 
 
-def test_label_missing_from_the_source_is_invalid(source):
+def test_label_missing_from_the_source_is_rejected(source):
     absent = {"time": np.datetime64("2021-06-01")}
-    assert not OffsetView(source).is_valid(absent)
+    assert not OffsetView(source).accepts(absent)
     # offsets around a failed lookup must not land on real positions
-    assert not OffsetView(source, offsets={"time": [1, 2]}).is_valid(absent)
+    assert not OffsetView(source, offsets={"time": [1, 2]}).accepts(absent)
 
 
 def test_fill_blanks_only_the_steps_outside_the_source(source, times):
-    view = OffsetView(source, ["a"], offsets={"time": OFFSETS}, missing="fill")
+    view = OffsetView(source, ["a"], offsets={"time": OFFSETS}, unavailable="fill")
 
     start = view.fetch({"time": times[1]})  # positions [-2, 0, 1, 3]
     assert np.isnan(start.a.values[0]).all()
@@ -52,7 +52,7 @@ def test_fill_blanks_only_the_steps_outside_the_source(source, times):
 
 
 def test_fill_for_a_label_missing_from_the_source(source):
-    view = OffsetView(source, ["a"], offsets={"time": OFFSETS}, missing="fill")
+    view = OffsetView(source, ["a"], offsets={"time": OFFSETS}, unavailable="fill")
     out = view.fetch({"time": np.datetime64("2021-06-01")})
     assert out.a.shape == (4, 4)
     assert out.a.isnull().all()

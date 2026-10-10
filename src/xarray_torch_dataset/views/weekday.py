@@ -21,9 +21,9 @@ class SameWeekdayView(View):
         ds: xr.Dataset,
         variables: Sequence[str] | None = None,
         weeks: int = 1,
-        missing: Literal["drop", "fill"] = "drop",
+        unavailable: Literal["reject", "fill"] = "reject",
     ):
-        super().__init__(ds, variables, missing)
+        super().__init__(ds, variables, unavailable)
         self.weeks = weeks
 
     def select(self, point: Point) -> Indexers:

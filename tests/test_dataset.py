@@ -15,11 +15,11 @@ def test_points_a_view_cannot_serve_are_dropped(source, times):
     dataset = XrDataset(PointGrid(time=times), {"x": history(source)})
 
     assert len(dataset) == len(times) - 2
-    # index 0 is the first valid point, not the first point
+    # index 0 is the first accepted point, not the first point
     xr.testing.assert_identical(dataset[0]["x"], source[["a"]].isel(time=[0, 1, 2]))
 
 
-def test_a_point_must_be_valid_for_every_view(source, times):
+def test_a_point_must_be_accepted_by_every_view(source, times):
     views = {
         "x": history(source),
         "y": OffsetView(source, ["a"], offsets={"time": [1]}),
@@ -30,20 +30,20 @@ def test_a_point_must_be_valid_for_every_view(source, times):
     assert set(dataset[0]) == {"x", "y"}
 
 
-def test_invalid_points_can_be_reported_instead(source, times):
+def test_rejected_points_can_be_reported_instead(source, times):
     with pytest.raises(ValueError, match="2 of 31"):
-        XrDataset(PointGrid(time=times), {"x": history(source)}, invalid="raise")
+        XrDataset(PointGrid(time=times), {"x": history(source)}, rejected="raise")
 
 
-def test_dataset_without_valid_points_is_an_error(source):
+def test_dataset_without_accepted_points_is_an_error(source):
     points = [{"time": np.datetime64("2021-01-01")}]
     with pytest.raises(ValueError, match="No point"):
         XrDataset(points, {"x": history(source)})
 
 
 def test_filling_view_never_drops_a_point(source, times):
-    views = {"x": history(source, missing="fill")}
-    dataset = XrDataset(PointGrid(time=times), views, invalid="raise")
+    views = {"x": history(source, unavailable="fill")}
+    dataset = XrDataset(PointGrid(time=times), views, rejected="raise")
 
     assert len(dataset) == len(times)
     assert np.isnan(dataset[0]["x"].a.values[:2]).all()
@@ -51,7 +51,7 @@ def test_filling_view_never_drops_a_point(source, times):
 
 def test_dropping_view_decides_when_views_are_mixed(source, times):
     views = {
-        "x": history(source, missing="fill"),
+        "x": history(source, unavailable="fill"),
         "y": OffsetView(source, ["a"], offsets={"time": [1]}),
     }
     dataset = XrDataset(PointGrid(time=times), views)
@@ -80,7 +80,7 @@ def test_batches_through_a_dataloader(source, times):
 
 def test_a_batch_of_samples_equals_the_single_samples(source, times):
     views = {
-        "x": history(source, missing="fill"),
+        "x": history(source, unavailable="fill"),
         "y": OffsetView(source, ["a"], offsets={"time": [1]}),
     }
     dataset = XrDataset(PointGrid(time=times), views)

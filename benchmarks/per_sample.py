@@ -2,7 +2,7 @@
 
 Covers construction, correctness against in-memory data, the time per
 sample for each chunking and backend, where that time goes, and the cost
-of ``missing="fill"``.
+of ``unavailable="fill"``.
 
 usage: uv run python benchmarks/per_sample.py STORES_DIR
 """
@@ -35,10 +35,12 @@ def open_store(path, backend):
     raise ValueError(backend)
 
 
-def build(ds, missing="drop"):
+def build(ds, unavailable="reject"):
     views = {
-        "x": OffsetView(ds, ["t2m", "u10"], offsets={"time": HISTORY}, missing=missing),
-        "y": OffsetView(ds, ["t2m"], missing=missing),
+        "x": OffsetView(
+            ds, ["t2m", "u10"], offsets={"time": HISTORY}, unavailable=unavailable
+        ),
+        "y": OffsetView(ds, ["t2m"], unavailable=unavailable),
     }
     return XrDataset(PointGrid(time=ds.time.values), views, transform=ToTensors())
 
@@ -106,8 +108,8 @@ raw = timeit(lambda i: [a.oindex[np.arange(picks[i], picks[i] + 4)] for a in arr
 print(f"raw zarr, same data, oindex {raw:7.3f}")
 
 # ---------------------------------------------------------------------------
-section('missing="fill" (chunk24, lazy), ms per fetch + load of view x')
-filling = build(ds, missing="fill").views["x"]
+section('unavailable="fill" (chunk24, lazy), ms per fetch + load of view x')
+filling = build(ds, unavailable="fill").views["x"]
 complete = {"time": ds.time.values[5000]}
 partial = {"time": ds.time.values[1]}  # two of four steps missing
 absent = {"time": np.datetime64("2030-01-01")}  # everything missing

@@ -33,11 +33,11 @@ def test_arithmetic_on_a_failed_lookup_raises(source):
         position + np.array([1, 2])
 
 
-# -- is_valid -------------------------------------------------------------
+# -- accepts ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("positions", "valid"),
+    ("positions", "accepted"),
     [
         (0, True),
         (30, True),
@@ -50,22 +50,22 @@ def test_arithmetic_on_a_failed_lookup_raises(source):
         ([], True),
     ],
 )
-def test_is_valid_checks_positions_against_the_source(source, positions, valid):
-    assert Positions(source).is_valid(at(time=positions)) is valid
+def test_accepts_checks_positions_against_the_source(source, positions, accepted):
+    assert Positions(source).accepts(at(time=positions)) is accepted
 
 
-def test_is_valid_needs_every_dimension_complete(source):
+def test_accepts_needs_every_dimension_complete(source):
     view = Positions(source)
-    assert view.is_valid(at(time=3, lat=[0, 3]))
-    assert not view.is_valid(at(time=3, lat=[0, 4]))
+    assert view.accepts(at(time=3, lat=[0, 3]))
+    assert not view.accepts(at(time=3, lat=[0, 4]))
 
 
-def test_fill_view_is_valid_without_selecting(source):
+def test_fill_view_accepts_without_selecting(source):
     class Unselectable(View):
         def select(self, point):
             raise AssertionError("select must not be called")
 
-    assert Unselectable(source, missing="fill").is_valid({})
+    assert Unselectable(source, unavailable="fill").accepts({})
 
 
 def test_errors_in_select_are_not_swallowed(source):
@@ -74,40 +74,40 @@ def test_errors_in_select_are_not_swallowed(source):
             return {"time": point["tiem"]}
 
     with pytest.raises(KeyError):
-        Typo(source).is_valid({"time": 0})
+        Typo(source).accepts({"time": 0})
 
 
 # -- fetch ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("missing", ["drop", "fill"])
-def test_fetch_reads_a_complete_selection(source, missing):
-    view = Positions(source, missing=missing)
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_fetch_reads_a_complete_selection(source, unavailable):
+    view = Positions(source, unavailable=unavailable)
     indexers = {"time": [5, 2, 9], "lat": 1}
     xr.testing.assert_identical(view.fetch(at(**indexers)), source.isel(indexers))
 
 
 @pytest.mark.parametrize("positions", [-1, 31, None, [0, -1]])
-def test_fetch_raises_on_missing_positions_when_dropping(source, positions):
+def test_fetch_raises_on_missing_positions_when_rejecting(source, positions):
     with pytest.raises(IndexError):
         Positions(source).fetch(at(time=positions))
 
 
-@pytest.mark.parametrize("missing", ["drop", "fill"])
-def test_slices_are_rejected(source, missing):
-    view = Positions(source, missing=missing)
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_slices_are_rejected(source, unavailable):
+    view = Positions(source, unavailable=unavailable)
     with pytest.raises(TypeError, match="slice"):
         view.fetch(at(time=slice(0, 3)))
-    if missing == "drop":
+    if unavailable == "reject":
         with pytest.raises(TypeError, match="slice"):
-            view.is_valid(at(time=slice(0, 3)))
+            view.accepts(at(time=slice(0, 3)))
 
 
-# -- fetch with missing="fill" --------------------------------------------
+# -- fetch with unavailable="fill" --------------------------------------------
 
 
 def test_fill_keeps_shape_and_blanks_missing_entries(source, times):
-    out = Positions(source, missing="fill").fetch(at(time=[-1, 0, 1, 31]))
+    out = Positions(source, unavailable="fill").fetch(at(time=[-1, 0, 1, 31]))
 
     assert out.a.shape == (4, 4)
     assert np.isnan(out.a.values[[0, 3]]).all()
@@ -117,7 +117,7 @@ def test_fill_keeps_shape_and_blanks_missing_entries(source, times):
 
 
 def test_fill_masks_coordinates_of_missing_entries(source, times):
-    out = Positions(source, missing="fill").fetch(at(time=[-1, 0, 1, 31]))
+    out = Positions(source, unavailable="fill").fetch(at(time=[-1, 0, 1, 31]))
 
     assert np.isnat(out.time.values[[0, 3]]).all()
     np.testing.assert_array_equal(out.time.values[[1, 2]], times[[0, 1]])
@@ -126,7 +126,7 @@ def test_fill_masks_coordinates_of_missing_entries(source, times):
 
 @pytest.mark.parametrize("position", [None, -1, 31])
 def test_fill_missing_scalar_blanks_the_whole_sample(source, position):
-    out = Positions(source, missing="fill").fetch(at(time=position))
+    out = Positions(source, unavailable="fill").fetch(at(time=position))
 
     assert out.a.dims == ("lat",)  # the dimension is dropped as usual
     assert out.a.isnull().all()
@@ -134,7 +134,7 @@ def test_fill_missing_scalar_blanks_the_whole_sample(source, position):
 
 
 def test_fill_combines_missing_entries_of_several_dimensions(source):
-    out = Positions(source, missing="fill").fetch(at(time=[-1, 2], lat=[0, 9, 3]))
+    out = Positions(source, unavailable="fill").fetch(at(time=[-1, 2], lat=[0, 9, 3]))
 
     expected = np.full((2, 3), np.nan)
     expected[1, [0, 2]] = source.a.values[2, [0, 3]]
@@ -178,10 +178,10 @@ def test_fetch_many_matches_fetch(source, points):
     ],
 )
 def test_fetch_many_fills_like_fetch(source, points):
-    assert_matches_fetch(Positions(source, missing="fill"), points)
+    assert_matches_fetch(Positions(source, unavailable="fill"), points)
 
 
-def test_fetch_many_raises_on_missing_positions_when_dropping(source):
+def test_fetch_many_raises_on_missing_positions_when_rejecting(source):
     with pytest.raises(IndexError):
         Positions(source).fetch_many([at(time=[0, 1]), at(time=[30, 31])])
 

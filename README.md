@@ -35,7 +35,9 @@ inputs = xr.Dataset(
     {"t2m": (dims, np.random.rand(31, 8, 8)), "u10": (dims, np.random.rand(31, 8, 8))},
     coords={"time": times},
 )
-targets = xr.Dataset({"precip": (dims, np.random.rand(31, 8, 8))}, coords={"time": times})
+targets = xr.Dataset(
+    {"precip": (dims, np.random.rand(31, 8, 8))}, coords={"time": times}
+)
 
 dataset = XrDataset(
     points=PointGrid(time=times),
@@ -68,9 +70,12 @@ print({name: tensor.shape for name, tensor in batch.items()})
 | `SameWeekdayView` | The same weekday in each of the weeks before the point. |
 | `FindLatestForecastView` | From a forecast source with `init_time` and `lead_time`, the most recent forecast for the point's valid time. This aligns, say, a 3-hourly forecast with hourly points. |
 
-**Missing data.** Each view takes `missing="drop"` (the default) or `missing="fill"`. With `"drop"`, a point whose selection leaves the source is not part of the dataset. With `"fill"`, the point is kept and whatever is missing comes back as NaN, in the shape a complete selection would have.
+**Unavailable data.** A source may not have everything a point asks for: a history window can reach back before the source starts, or the source may lack the point's label. What happens then is decided in two places.
 
-`XrDataset(..., invalid="raise")` raises instead of dropping points silently, which helps to catch a misaligned source.
+- Each view takes `unavailable="reject"` (the default) or `unavailable="fill"`. With `"reject"`, the view rejects such a point. With `"fill"`, it accepts every point and returns NaN for whatever the source lacks, in the shape a complete selection would have.
+- The dataset takes `rejected="drop"` (the default) or `rejected="raise"`. With `"drop"`, points that some view rejected are left out. With `"raise"`, they are an error at construction, which helps to catch a misaligned source.
+
+A filling view never rejects a point, so the other views decide which points the dataset has. This is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
 **Transforms.** A transform receives `{view name: xr.Dataset}`. `ToTensors` stacks the variables of each view into one float tensor, variables first.
 

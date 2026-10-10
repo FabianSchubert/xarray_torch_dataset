@@ -46,5 +46,5 @@ if __name__ == "__main__":
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=4)
     batch = next(iter(loader))
-    print(f"{len(dataset)} of {len(points)} points are valid")
+    print(f"{len(dataset)} of {len(points)} points are kept")
     print({k: v.shape for k, v in batch.items()})

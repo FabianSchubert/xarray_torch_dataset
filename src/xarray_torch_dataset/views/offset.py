@@ -18,8 +18,8 @@ class OffsetView(View):
     from the result. Point entries the source has no index for are ignored.
 
     Offsets count steps along the source's index, not durations. Steps that
-    leave the source are missing: they make the point invalid, or are filled
-    with NaN if ``missing="fill"``.
+    leave the source are missing: the view rejects the point, or fills them
+    with NaN if ``unavailable="fill"``.
     """
 
     def __init__(
@@ -27,9 +27,9 @@ class OffsetView(View):
         ds: xr.Dataset,
         variables: Sequence[str] | None = None,
         offsets: Mapping[str, Sequence[int]] | None = None,
-        missing: Literal["drop", "fill"] = "drop",
+        unavailable: Literal["reject", "fill"] = "reject",
     ):
-        super().__init__(ds, variables, missing)
+        super().__init__(ds, variables, unavailable)
         self.offsets = {dim: np.asarray(o) for dim, o in (offsets or {}).items()}
         unindexed = set(self.offsets) - set(self.ds.indexes)
         if unindexed:
