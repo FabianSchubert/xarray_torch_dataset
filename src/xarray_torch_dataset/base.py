@@ -249,7 +249,8 @@ class XrDataset(Dataset):
     """Serves, for each accepted point, ``{name: view.fetch(point)}``.
 
     Points that some view rejects are dropped at construction, or
-    reported if ``rejected="raise"``.
+    reported if ``rejected="raise"``. `n_rejected` says how many points
+    each view rejected; a point counts for the first view that rejected it.
 
     A DataLoader that batches asks for a whole batch at once, which costs
     one read per view instead of one per sample (see `View.fetch_many`).
@@ -265,16 +266,25 @@ class XrDataset(Dataset):
         self.points = points
         self.views = views
         self.transform = transform
-        self.indices = [
-            i
-            for i in range(len(points))
-            if all(view.accepts(points[i]) for view in views.values())
-        ]
-        n_rejected = len(points) - len(self.indices)
+        self.indices = []
+        self.n_rejected = dict.fromkeys(views, 0)
+        for i in range(len(points)):
+            point = points[i]
+            for name, view in views.items():
+                if not view.accepts(point):
+                    self.n_rejected[name] += 1
+                    break
+            else:
+                self.indices.append(i)
+
+        by_view = ", ".join(f"{n} by {name!r}" for name, n in self.n_rejected.items())
         if not self.indices:
-            raise ValueError("No point is accepted by all views.")
-        if rejected == "raise" and n_rejected:
-            raise ValueError(f"{n_rejected} of {len(points)} points were rejected.")
+            raise ValueError(f"No point is accepted by all views ({by_view}).")
+        if rejected == "raise" and len(self.indices) < len(points):
+            raise ValueError(
+                f"{len(points) - len(self.indices)} of {len(points)} points "
+                f"were rejected ({by_view})."
+            )
 
     def __len__(self):
         return len(self.indices)

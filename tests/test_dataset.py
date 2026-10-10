@@ -30,14 +30,24 @@ def test_a_point_must_be_accepted_by_every_view(source, times):
     assert set(dataset[0]) == {"x", "y"}
 
 
+def test_rejected_points_are_counted_for_the_first_view_that_rejects(source, times):
+    late = OffsetView(source, ["a"], offsets={"time": [1]})  # rejects the last
+    views = {"x": history(source), "y": late, "z": history(source)}
+    dataset = XrDataset(PointGrid(time=times), views)
+
+    # z rejects the same two points as x, which are counted for x
+    assert dataset.n_rejected == {"x": 2, "y": 1, "z": 0}
+    assert len(dataset) + sum(dataset.n_rejected.values()) == len(times)
+
+
 def test_rejected_points_can_be_reported_instead(source, times):
-    with pytest.raises(ValueError, match="2 of 31"):
+    with pytest.raises(ValueError, match=r"2 of 31 points were rejected \(2 by 'x'\)"):
         XrDataset(PointGrid(time=times), {"x": history(source)}, rejected="raise")
 
 
 def test_dataset_without_accepted_points_is_an_error(source):
     points = [{"time": np.datetime64("2021-01-01")}]
-    with pytest.raises(ValueError, match="No point"):
+    with pytest.raises(ValueError, match=r"No point .* \(1 by 'x'\)"):
         XrDataset(points, {"x": history(source)})
 
 
@@ -46,6 +56,7 @@ def test_filling_view_never_drops_a_point(source, times):
     dataset = XrDataset(PointGrid(time=times), views, rejected="raise")
 
     assert len(dataset) == len(times)
+    assert dataset.n_rejected == {"x": 0}
     assert np.isnan(dataset[0]["x"].a.values[:2]).all()
 
 

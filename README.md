@@ -75,6 +75,8 @@ print({name: tensor.shape for name, tensor in batch.items()})
 - Each view takes `unavailable="reject"` (the default) or `unavailable="fill"`. With `"reject"`, the view rejects such a point. With `"fill"`, it accepts every point and returns NaN for whatever the source lacks, in the shape a complete selection would have.
 - The dataset takes `rejected="drop"` (the default) or `rejected="raise"`. With `"drop"`, points that some view rejected are left out. With `"raise"`, they are an error at construction, which helps to catch a misaligned source.
 
+`dataset.n_rejected` says how many points each view rejected, for example `{"x": 3, "y": 0}`. A few points rejected by a history view are an edge effect; most points rejected by one view usually mean that its source is on a different grid. A point rejected by several views is counted for the first of them.
+
 A filling view never rejects a point, so the other views decide which points the dataset has. This is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
 **Transforms.** A transform receives `{view name: xr.Dataset}`. `ToTensors` stacks the variables of each view into one float tensor, variables first.
