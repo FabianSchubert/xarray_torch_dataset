@@ -145,26 +145,26 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
 - **Missing data is marked by position, never by exception.** With `missing="fill"` a view has to say what shape the missing data would have had, and out-of-bounds positions carry that for free, including windows that are only partly missing. An exception carries no shape. An earlier version also accepted a `LookupError` from `select` in drop mode; that was removed so there is one mechanism, and so a `KeyError` from a typo is no longer mistaken for missing data.
 - **A failed scalar lookup is `None`, not `-1`.** Arithmetic on `-1` gives positions that look valid (`-1 + [1, 2]` is `[0, 1]`), so a view that forgot to check would silently serve unrelated data. `None` raises a `TypeError` on that line instead. numpy's masked value and NaN were tried as markers that survive arithmetic and rejected: a masked value silently becomes position 0 when converted to a plain array, and NaN turns positions into floats. Array lookups still use `-1`, because an integer array cannot hold `None`; arithmetic on such an array keeps the old hazard.
 - **A batch is read as one block, then split per point.** `fetch_many` returns a list with one dataset per point instead of one stacked dataset. Points with different shapes therefore need no special handling, a view's contract stays "one dataset per point", and stacking stays with torch's collate function. The price is the per-point overhead measured above.
+- **`PointGrid` stays.** In one dimension a list comprehension does the same job, but point sets for forecasts have several dimensions (init time, lead time, possibly members or locations) and quickly reach hundreds of thousands of points. As a list of dicts that is a large object that is also copied into every DataLoader worker; `PointGrid` stores only the label arrays. A grid also knows that its dimensions are independent, which could later let validation run per dimension instead of per point. It cannot express arbitrary combinations of labels; for those, a list of dicts remains the way.
 - **The dask fork hang is documented, not fixed.** It most likely comes from forking a process whose dask thread pool is already running, which this package cannot repair, and the cause was deliberately not traced. The recommendation, given in the README, is to open stores without dask, `xr.open_dataset(path, engine="zarr", chunks=None)`, which avoids the hang and in the benchmarks was faster on 1-step and 24-step chunks and about equal on 168-step chunks. For those who need dask, the `forkserver` start method or dask's synchronous scheduler work. There is no runtime warning for dask-backed sources, because it would also fire for these safe configurations.
 - **Slices are not accepted from `select`.** No view used them, any slice can be written as `np.arange(...)`, and supporting them needed separate bounds and fill logic. They could return as a read optimisation for contiguous windows if a zarr test shows it matters.
 
 ## Open questions
 
-1. **Is `PointGrid` worth having?** For one dimension a list comprehension does the same job; it only earns its place for multi-dimensional grids.
-2. **Default for invalid points.** Dropping suits the history-margin case but can hide a misaligned source. The alternative is to default to `invalid="raise"`.
-3. **Steps versus durations.** `OffsetView` counts positional steps along the source's index. On a time axis with gaps, or across sources with different resolutions, a step window covers the wrong period without any error. A duration-based view (or option) is not designed yet.
-4. **Validation cost.** Validation is a Python loop over all points and views, at roughly 45 µs per point and view. Extrapolated, that is about 90 s for a million points with two views; it has not been run at that size.
-5. **Batched fetching** is prototyped (`fetch_many`, `__getitems__`) but not settled:
+1. **Default for invalid points.** Dropping suits the history-margin case but can hide a misaligned source. The alternative is to default to `invalid="raise"`.
+2. **Steps versus durations.** `OffsetView` counts positional steps along the source's index. On a time axis with gaps, or across sources with different resolutions, a step window covers the wrong period without any error. A duration-based view (or option) is not designed yet.
+3. **Validation cost.** Validation is a Python loop over all points and views, at roughly 45 µs per point and view. Extrapolated, that is about 90 s for a million points with two views; it has not been run at that size.
+4. **Batched fetching** is prototyped (`fetch_many`, `__getitems__`) but not settled:
    - Views that need scattered elements along several dimensions, such as `FindLatestForecastView`, fall back to one read per point. A pointwise read would serve them, but xarray's vectorized indexing was slow in the test above.
    - The fallback rule counts elements, not chunks. Reading a somewhat larger block can still be cheaper when it touches the same chunks.
    - The per-point overhead of `fetch_many` could be trimmed, for example by letting the transform work on the block.
    - `__getitems__` is always on. There is no switch to read sample by sample, short of setting `__getitems__ = None` on a subclass as the benchmark does.
-6. **Rough edges of `missing="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources; on zarr an entirely missing sample costs as much as a complete one. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
-7. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
+5. **Rough edges of `missing="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources; on zarr an entirely missing sample costs as much as a complete one. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
+6. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
 
 ## Possible next steps
 
-1. Decide open questions 1 and 2; they are small and only need a choice.
+1. Decide the default for invalid points (question 1); it only needs a choice.
 2. Repeat the benchmarks on a store that is not in the page cache, ideally real, compressible data on network storage, since that is where fewer reads should matter most.
-3. Settle batched fetching (question 5), starting with the forecast view.
-4. Design duration-based windows (question 3).
+3. Settle batched fetching (question 4), starting with the forecast view.
+4. Design duration-based windows (question 2).
