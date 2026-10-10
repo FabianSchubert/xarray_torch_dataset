@@ -47,7 +47,7 @@ The `examples/` folder has two scripts on random in-memory data. `examples/forec
 
 Other facts:
 
-- **Dependencies**: `numpy`, `torch`, `xarray`, `matplotlib`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr` and `dask` for the benchmarks. The package itself imports neither.
+- **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr` and `dask` for the benchmarks. The package itself imports neither.
 - **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
 - **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, accepting and rejecting, fetching, filling), `fetch_many` against `fetch`, the three ready-made views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
 - **`README.md`** introduces the parts with a runnable example, shows how to write a view and says how to open zarr stores.
@@ -162,6 +162,15 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
    - `__getitems__` is always on. There is no switch to read sample by sample, short of setting `__getitems__ = None` on a subclass as the benchmark does.
 4. **Rough edges of `unavailable="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources; on zarr an entirely missing sample costs as much as a complete one. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
 5. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
+
+## Known issues
+
+Found by reading the code; none has a test or a fix yet.
+
+- **`locate` assumes a unique index.** With duplicate labels, a scalar lookup returns a slice or a boolean mask instead of a position, and a lookup of several labels raises. Raising a clear error for a non-unique index would be the minimal fix.
+- **`_fill` blanks variables that lack the masked dimension.** It masks the whole dataset along each dimension with unavailable positions. If only some entries of an array of positions are unavailable, a variable without that dimension has nothing unavailable but comes back entirely NaN.
+- **`FindLatestForecastView.select` scans every init time for every point.** That adds to the validation cost (question 2) on long forecast archives.
+- **`XrDataset.indices` is a Python list of ints.** At millions of points it costs memory, and forked DataLoader workers end up copying it; a numpy array would avoid both.
 
 ## Possible next steps
 
