@@ -139,3 +139,94 @@ def test_fill_combines_missing_entries_of_several_dimensions(source):
     expected = np.full((2, 3), np.nan)
     expected[1, [0, 2]] = source.a.values[2, [0, 3]]
     np.testing.assert_array_equal(out.a.values, expected)
+
+
+# -- fetch_many -----------------------------------------------------------
+
+
+def assert_matches_fetch(view, points):
+    out = view.fetch_many(points)
+    assert len(out) == len(points)
+    for data, point in zip(out, points, strict=True):
+        xr.testing.assert_identical(data, view.fetch(point))
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        [at(time=[0, 1, 2]), at(time=[1, 2, 3]), at(time=[20, 21, 22])],
+        [at(time=[5, 2, 9]), at(time=[9, 9, 2])],  # unsorted and repeated
+        [at(time=4), at(time=4), at(time=30)],  # scalars drop the dimension
+        [at(time=[0, 1], lat=[0, 1]), at(time=[1, 2], lat=[0, 1])],
+        [at(time=[0, 1]), at(time=[3, 4, 5, 6]), at(time=7)],  # different shapes
+        [at(time=[0, 1]), at(lat=[2, 3])],  # no dimension in common
+        [at(time=[0, 1])],
+        [],
+    ],
+)
+def test_fetch_many_matches_fetch(source, points):
+    assert_matches_fetch(Positions(source), points)
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        [at(time=[-1, 0, 1]), at(time=[29, 30, 31]), at(time=[4, 5, 6])],
+        [at(time=None), at(time=3), at(time=31)],
+        [at(time=[-1, 31]), at(time=None)],  # nothing exists at all
+        [at(time=[-1, 2], lat=[0, 9, 3]), at(time=[2, 3], lat=[1, 2, 3])],
+    ],
+)
+def test_fetch_many_fills_like_fetch(source, points):
+    assert_matches_fetch(Positions(source, missing="fill"), points)
+
+
+def test_fetch_many_raises_on_missing_positions_when_dropping(source):
+    with pytest.raises(IndexError):
+        Positions(source).fetch_many([at(time=[0, 1]), at(time=[30, 31])])
+
+
+def test_fetch_many_reads_the_source_once(source, monkeypatch):
+    view = Positions(source)
+    reads = []
+    isel = xr.Dataset.isel
+
+    def counting_isel(ds, *args, **kwargs):
+        if ds is view.ds:
+            reads.append(args)
+        return isel(ds, *args, **kwargs)
+
+    monkeypatch.setattr(xr.Dataset, "isel", counting_isel)
+    view.fetch_many([at(time=[0, 1, 2]), at(time=[1, 2, 3]), at(time=[7, 8, 9])])
+    assert len(reads) == 1
+
+
+def test_fetch_many_does_not_read_more_than_the_points_ask_for(source, monkeypatch):
+    view = Positions(source)
+    # one element each; a block over both dimensions would hold nine
+    points = [at(time=0, lat=0), at(time=5, lat=1), at(time=9, lat=2)]
+    read = []
+    isel = xr.Dataset.isel
+
+    def recording_isel(ds, *args, **kwargs):
+        out = isel(ds, *args, **kwargs)
+        if ds is view.ds:
+            read.append(out.a.size)
+        return out
+
+    monkeypatch.setattr(xr.Dataset, "isel", recording_isel)
+    out = view.fetch_many(points)
+    assert read == [1, 1, 1]
+    assert [float(o.a) for o in out] == [0.0, 21.0, 38.0]
+
+
+def test_fetch_many_uses_an_overridden_fetch(source):
+    class Computed(View):
+        def select(self, point):
+            raise AssertionError("select must not be called")
+
+        def fetch(self, point):
+            return xr.Dataset({"twice": 2 * point["n"]})
+
+    out = Computed(source).fetch_many([{"n": 1}, {"n": 4}])
+    assert [int(o.twice) for o in out] == [2, 8]

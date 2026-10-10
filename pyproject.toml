@@ -17,10 +17,12 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "dask>=2026.8.0",
     "mypy>=2.4.0",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
+    "zarr>=3.4.1",
 ]
 
 [tool.ruff.lint]

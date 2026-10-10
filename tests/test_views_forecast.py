@@ -154,3 +154,14 @@ def test_dataset_drops_the_points_a_coarser_forecast_cannot_serve(three_hourly):
 
     # per init time off the 3-hourly grid, the last 1 or 2 leads are unreachable
     assert len(dataset) == len(points) - 16 * (1 + 2)
+
+
+@pytest.mark.parametrize("missing", ["drop", "fill"])
+def test_fetch_many_matches_fetch(three_hourly, missing):
+    view = FindLatestForecastView(three_hourly, None, WINDOW, missing=missing)
+    points = [point(init=6, lead=5), point(init=8, lead=5), point(init=20, lead=1)]
+    if missing == "fill":
+        points.append(point(init=2, lead=24))  # no matching forecast
+
+    for data, p in zip(view.fetch_many(points), points, strict=True):
+        xr.testing.assert_identical(data, view.fetch(p))

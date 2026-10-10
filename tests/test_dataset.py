@@ -76,3 +76,29 @@ def test_batches_through_a_dataloader(source, times):
 
     assert batch["x"].shape == (5, 1, 3, 4)  # batch, variable, time, lat
     np.testing.assert_array_equal(batch["x"][1, 0], source.a.values[1:4])
+
+
+def test_a_batch_of_samples_equals_the_single_samples(source, times):
+    views = {
+        "x": history(source, missing="fill"),
+        "y": OffsetView(source, ["a"], offsets={"time": [1]}),
+    }
+    dataset = XrDataset(PointGrid(time=times), views)
+    indices = [0, 1, 7, 29, 7]
+
+    batch = dataset.__getitems__(indices)
+    assert len(batch) == len(indices)
+    for sample, i in zip(batch, indices, strict=True):
+        assert set(sample) == {"x", "y"}
+        for name in sample:
+            xr.testing.assert_identical(sample[name], dataset[i][name])
+
+
+def test_a_batch_goes_through_the_transform(source, times):
+    dataset = XrDataset(
+        PointGrid(time=times), {"x": history(source)}, transform=ToTensors()
+    )
+    batch = dataset.__getitems__([3, 4])
+    assert all(
+        torch.equal(batch[k]["x"], dataset[i]["x"]) for k, i in enumerate([3, 4])
+    )
