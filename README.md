@@ -80,7 +80,9 @@ print({name: tensor.shape for name, tensor in batch.items()})
 
 Asking every view about every point happens when the dataset is constructed and takes time on large point sets (roughly 0.1 ms per point and view). `XrDataset(..., validate=False)` skips it. Every point is then kept, and one that a view would have rejected raises an `IndexError` when it is fetched, which may be well into an epoch. It never returns wrong data. Use it when you already know that every point can be served.
 
-A filling view never rejects a point, so the other views decide which points the dataset has. This is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
+A filling view never rejects a point, so the other views decide which points the dataset has. If every view fills, no point is rejected at all, and a point that no source has data for becomes a sample of NaN; keep at least one rejecting view, typically the target, to avoid that. Because integers cannot hold NaN, a filling view returns integer and boolean values as floats, for every point.
+
+All of this is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
 **Transforms.** A transform receives `{view name: xr.Dataset}`. `ToTensors` stacks the variables of each view into one float tensor, variables first.
 

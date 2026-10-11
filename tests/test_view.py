@@ -141,6 +141,61 @@ def test_fill_combines_missing_entries_of_several_dimensions(source):
     np.testing.assert_array_equal(out.a.values, expected)
 
 
+def test_fill_returns_floats_whether_or_not_something_is_missing(source):
+    view = Positions(source, unavailable="fill")
+    complete = view.fetch(at(time=[0, 1]))
+    partly = view.fetch(at(time=[0, 31]))
+    nothing = view.fetch(at(time=None))
+
+    for out in (complete, partly, nothing):
+        assert out["count"].dtype == float  # an integer variable
+        assert out.day_of_year.dtype == float  # an integer coordinate
+        assert out.a.dtype == source.a.dtype
+    np.testing.assert_array_equal(complete["count"].values, [0.0, 1.0])
+    # without filling, integers stay integers
+    assert Positions(source).fetch(at(time=[0, 1]))["count"].dtype.kind == "i"
+
+
+@pytest.fixture
+def recording(source):
+    """`source` as dask arrays, one chunk per step, and the steps that get read."""
+    import dask
+    import dask.array
+
+    read = []
+
+    def record(block, block_info=None):
+        read.append(block_info[None]["chunk-location"][0])
+        return block
+
+    def lazily(var):
+        data = dask.array.map_blocks(record, var.data, dtype=var.dtype, meta=var.data)
+        return var.copy(data=data)
+
+    with dask.config.set(scheduler="synchronous"):
+        yield source.chunk(time=1).map(lazily), read
+
+
+def test_fill_reads_only_the_steps_that_exist(source, recording):
+    lazy, read = recording
+    out = Positions(lazy, ["a"], unavailable="fill").fetch(at(time=[29, 30, 31]))
+    values = out.a.values
+
+    assert sorted(set(read)) == [29, 30]  # no other step stands in
+    np.testing.assert_array_equal(values[:2], source.a.values[[29, 30]])
+    assert np.isnan(values[2]).all()
+
+
+@pytest.mark.parametrize("positions", [None, 31, [-1, 31]])
+def test_fill_reads_nothing_if_nothing_exists(recording, positions):
+    lazy, read = recording
+    out = Positions(lazy, unavailable="fill").fetch(at(time=positions))
+
+    assert out.a.isnull().all() and out["count"].isnull().all()
+    assert out.a.shape == np.shape(positions or 0) + (4,)
+    assert read == []
+
+
 # -- fetch_many -----------------------------------------------------------
 
 

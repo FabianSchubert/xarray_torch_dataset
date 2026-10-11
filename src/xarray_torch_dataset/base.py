@@ -41,7 +41,8 @@ class View(ABC):
     A position that is ``None`` or outside the source means that data is
     missing. With ``unavailable="reject"`` the view rejects such a point.
     With ``unavailable="fill"`` it accepts every point and returns whatever
-    is missing as NaN.
+    is missing as NaN. Integers cannot hold NaN, so a filling view returns
+    integer and boolean values as floats, for every point.
     """
 
     def __init__(
@@ -167,10 +168,10 @@ class View(ABC):
         `exists` says which positions are missing; where it is False the
         entry of `indexers` is not used.
         """
-        if all(e.all() for e in exists.values()):
-            return source.isel(indexers)
         if self.unavailable == "fill":
             return self._fill(source, indexers, exists)
+        if all(e.all() for e in exists.values()):
+            return source.isel(indexers)
         raise IndexError(f"Selection for {point!r} leaves the source.")
 
     def _exists(self, indexers: Indexers) -> dict[Hashable, np.ndarray]:
@@ -206,24 +207,43 @@ class View(ABC):
         dimension with missing positions, the coordinates of those entries
         are masked as well (NaN or NaT).
 
+        Integer and boolean values cannot hold NaN, so they are returned as
+        floats. That holds for a complete selection too, so that the dtype
+        does not depend on whether something happens to be missing.
+
         Works in two steps: read a selection of the right shape in which
         every missing position is replaced by a stand-in, then blank out
         the stand-ins. Example on a 31-step ``time`` axis::
 
-            indexers  {"time": [-1, 0, 1, 31]}
-            exists    {"time": [False, True, True, False]}
-            readable  {"time": [0, 0, 1, 0]}      # position 0 stands in
-            result    time steps [NaN, step 0, step 1, NaN]
+            indexers  {"time": [29, 30, 31]}
+            exists    {"time": [True, True, False]}
+            readable  {"time": [29, 30, 29]}      # position 29 stands in
+            result    time steps [step 29, step 30, NaN]
         """
         # Step 1: read. The shape is already final, but the entries at
-        # missing positions hold the data of position 0.
-        readable = {
-            dim: 0 if pos is None else np.where(exists[dim], pos, 0)
-            for dim, pos in indexers.items()
-        }
+        # missing positions hold the data of the stand-in. The stand-in is
+        # a position that is read anyway, so it costs no extra I/O.
+        readable = {}
+        nothing_to_read = False
+        for dim, pos in indexers.items():
+            present = exists[dim]
+            if present.all():
+                readable[dim] = pos
+            elif present.any():
+                stand_in = np.asarray(pos)[present].flat[0]
+                readable[dim] = np.where(present, pos, stand_in)
+            else:
+                # Nothing exists along `dim`, so the whole sample is
+                # missing. Position 0 only gives the selection its shape.
+                scalar = pos is None or np.ndim(pos) == 0
+                readable[dim] = 0 if scalar else np.zeros(np.shape(pos), dtype=int)
+                nothing_to_read = True
         out = source.isel(readable)
+        if nothing_to_read:
+            out = _blank(out)
+        out = _as_float(out, [n for n, c in source.coords.items() if c.dims])
 
-        # Step 2: blank out those entries, one dimension at a time.
+        # Step 2: blank out the stand-ins, one dimension at a time.
         for dim, present in exists.items():
             if present.all():
                 continue
@@ -237,12 +257,39 @@ class View(ABC):
             # ...so the coordinates along `dim` (taken from the source,
             # since a scalar position removes `dim` from `out`) are masked
             # separately. Otherwise a missing entry would carry the label
-            # of position 0.
+            # of the stand-in.
             along_dim = [n for n, c in source.coords.items() if dim in c.dims]
             out = out.assign_coords(
                 {name: out[name].where(mask).variable for name in along_dim}
             )
         return out
+
+
+def _blank(ds: xr.Dataset) -> xr.Dataset:
+    """`ds` with its data variables replaced by NaN (or NaT), unread."""
+    blank = {}
+    for name, var in ds.data_vars.items():
+        if var.dtype.kind in "iubf":
+            values = np.full(var.shape, np.nan)
+            if var.dtype.kind == "f":
+                values = values.astype(var.dtype)
+        elif var.dtype.kind in "mM":
+            values = np.full(var.shape, "NaT", dtype=var.dtype)
+        else:
+            continue  # left to be read and masked
+        blank[name] = (var.dims, values, var.attrs)
+    return ds.assign(blank)
+
+
+def _as_float(ds: xr.Dataset, coords: Sequence[Hashable]) -> xr.Dataset:
+    """`ds` with integer and boolean data variables and `coords` as floats."""
+    variables = {
+        n: v.astype(float) for n, v in ds.data_vars.items() if v.dtype.kind in "iub"
+    }
+    if variables:
+        ds = ds.assign(variables)
+    as_float = {n: ds[n].astype(float) for n in coords if ds[n].dtype.kind in "iub"}
+    return ds.assign_coords(as_float) if as_float else ds
 
 
 class XrDataset(Dataset):
