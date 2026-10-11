@@ -256,8 +256,11 @@ class XrDataset(Dataset):
     Every point is then kept, `n_rejected` is ``None``, and a point that a
     view would have rejected raises an ``IndexError`` when it is fetched.
 
-    A DataLoader that batches asks for a whole batch at once, which costs
-    one read per view instead of one per sample (see `View.fetch_many`).
+    ``batched=True`` is experimental. A DataLoader that batches then asks
+    for a whole batch at once, which costs one read per view instead of one
+    per sample (see `View.fetch_many`). On chunked stores that can be
+    faster, mostly with few workers. One point that cannot be fetched then
+    fails its whole batch.
     """
 
     def __init__(
@@ -267,10 +270,12 @@ class XrDataset(Dataset):
         transform: Callable | None = None,
         rejected: Literal["drop", "raise"] = "drop",
         validate: bool = True,
+        batched: bool = False,
     ):
         self.points = points
         self.views = views
         self.transform = transform
+        self.batched = batched
         if not len(points):
             raise ValueError("There are no points.")
         self.indices: Sequence[int]
@@ -310,8 +315,17 @@ class XrDataset(Dataset):
         sample = {name: view.fetch(point) for name, view in self.views.items()}
         return self.transform(sample) if self.transform else sample
 
-    def __getitems__(self, indices):
-        """The samples at `indices`, as a list. Called by torch's DataLoader."""
+    @property
+    def __getitems__(self):
+        """What torch's DataLoader calls with all indices of a batch, if set.
+
+        ``None`` unless ``batched=True``, so that by default a DataLoader
+        asks for one sample at a time through ``__getitem__``.
+        """
+        return self._getitems if self.batched else None
+
+    def _getitems(self, indices):
+        """The samples at `indices`, as a list, from one read per view."""
         points = [self.points[self.indices[idx]] for idx in indices]
         fetched = {name: view.fetch_many(points) for name, view in self.views.items()}
         samples = [

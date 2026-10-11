@@ -28,19 +28,13 @@ def open_store(path, backend):
     return xr.open_zarr(path, consolidated=False)
 
 
-class PerSample(XrDataset):
-    """An XrDataset that a DataLoader reads sample by sample."""
-
-    __getitems__ = None  # type: ignore[assignment]
-
-
 def build(ds, batched=True):
     views = {
         "x": OffsetView(ds, ["t2m", "u10"], offsets={"time": HISTORY}),
         "y": OffsetView(ds, ["t2m"]),
     }
-    cls = XrDataset if batched else PerSample
-    return cls(PointGrid(time=ds.time.values), views, transform=ToTensors())
+    points = PointGrid(time=ds.time.values)
+    return XrDataset(points, views, transform=ToTensors(), batched=batched)
 
 
 def timeit(fn, n):

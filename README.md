@@ -118,7 +118,7 @@ ds = xr.open_dataset("data.zarr", engine="zarr", chunks=None)
 
 If you need dask, start the workers with `DataLoader(..., multiprocessing_context="forkserver")` or use dask's synchronous scheduler (`dask.config.set(scheduler="synchronous")`).
 
-A `DataLoader` that batches reads each view's data once per batch rather than once per sample, without any setting. The benchmark results are in `STATUS.md`, and the scripts in `benchmarks/`.
+By default a `DataLoader` asks for one sample at a time, as with any torch dataset. `XrDataset(..., batched=True)` is an experimental alternative: a `DataLoader` that batches then reads each view's data once per batch rather than once per sample. In the benchmarks that was up to five times faster without workers and made less difference with many workers; it has not been measured on real data. The benchmark results are in `STATUS.md`, and the scripts in `benchmarks/`.
 
 ## Development
 

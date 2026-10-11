@@ -65,7 +65,7 @@ def test_without_validation_every_point_is_kept_and_fails_when_fetched(source, t
             raise AssertionError("accepts must not be called")
 
     views = {"x": NeverAsked(source, ["a"], offsets={"time": [-2 * DAY, 0 * DAY]})}
-    dataset = XrDataset(PointGrid(time=times), views, validate=False)
+    dataset = XrDataset(PointGrid(time=times), views, validate=False, batched=True)
 
     assert len(dataset) == len(times)
     assert dataset.n_rejected is None
@@ -119,7 +119,7 @@ def test_a_batch_of_samples_equals_the_single_samples(source, times):
         "x": history(source, unavailable="fill"),
         "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),
     }
-    dataset = XrDataset(PointGrid(time=times), views)
+    dataset = XrDataset(PointGrid(time=times), views, batched=True)
     indices = [0, 1, 7, 29, 7]
 
     batch = dataset.__getitems__(indices)
@@ -132,9 +132,31 @@ def test_a_batch_of_samples_equals_the_single_samples(source, times):
 
 def test_a_batch_goes_through_the_transform(source, times):
     dataset = XrDataset(
-        PointGrid(time=times), {"x": history(source)}, transform=ToTensors()
+        PointGrid(time=times),
+        {"x": history(source)},
+        transform=ToTensors(),
+        batched=True,
     )
     batch = dataset.__getitems__([3, 4])
     assert all(
         torch.equal(batch[k]["x"], dataset[i]["x"]) for k, i in enumerate([3, 4])
     )
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_a_dataloader_reads_batches_at_once_only_if_asked(source, times, batched):
+    class Counting(OffsetView):
+        batches = 0
+
+        def fetch_many(self, points):
+            type(self).batches += 1
+            return super().fetch_many(points)
+
+    view = Counting(source, ["a"], offsets={"time": [-DAY, 0 * DAY]})
+    dataset = XrDataset(
+        PointGrid(time=times), {"x": view}, transform=ToTensors(), batched=batched
+    )
+    batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=5)))
+
+    np.testing.assert_array_equal(batch["x"][0, 0], source.a.values[0:2])
+    assert Counting.batches == (1 if batched else 0)
