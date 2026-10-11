@@ -77,8 +77,17 @@ class View(ABC):
 
         Several labels give an array of positions, with ``-1`` for labels
         the source lacks. Check for those before doing arithmetic on it.
+
+        The labels along `dim` must be unique, since a label that occurs
+        twice has no single position.
         """
         index = self.ds.indexes[dim]
+        if not index.is_unique:
+            repeated = index[index.duplicated()][0]
+            raise ValueError(
+                f"Source has repeated labels along {dim!r} (e.g. {repeated}), "
+                "so a label has no single position."
+            )
         if np.ndim(labels) == 0:
             try:
                 return index.get_loc(labels)
@@ -332,14 +341,15 @@ class XrDataset(Dataset):
         self.batched = batched
         if not len(points):
             raise ValueError("There are no points.")
-        self.indices: Sequence[int]
+        # positions in `points` of the points the dataset serves
+        self.indices: np.ndarray
         self.n_rejected: dict[str, int] | None
         if not validate:
-            self.indices = range(len(points))
+            self.indices = np.arange(len(points))
             self.n_rejected = None
             return
 
-        self.indices = []
+        accepted = []
         self.n_rejected = dict.fromkeys(views, 0)
         for i in range(len(points)):
             point = points[i]
@@ -348,11 +358,14 @@ class XrDataset(Dataset):
                     self.n_rejected[name] += 1
                     break
             else:
-                self.indices.append(i)
+                accepted.append(i)
+        # an array, not a list: it is compact, and forked DataLoader
+        # workers share it instead of copying it
+        self.indices = np.array(accepted, dtype=np.int64)
 
-        n_rejected = len(points) - len(self.indices)
-        if not self.indices or (rejected == "raise" and n_rejected):
-            how_many = f"{n_rejected} of" if self.indices else "All"
+        n_rejected = len(points) - len(accepted)
+        if not accepted or (rejected == "raise" and n_rejected):
+            how_many = f"{n_rejected} of" if accepted else "All"
             by_view = ", ".join(
                 f"{n} by view {name!r}" for name, n in self.n_rejected.items() if n
             )
@@ -365,7 +378,7 @@ class XrDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        point = self.points[self.indices[idx]]
+        point = self.points[int(self.indices[idx])]
         sample = {name: view.fetch(point) for name, view in self.views.items()}
         return self.transform(sample) if self.transform else sample
 
@@ -380,7 +393,7 @@ class XrDataset(Dataset):
 
     def _getitems(self, indices):
         """The samples at `indices`, as a list, from one read per view."""
-        points = [self.points[self.indices[idx]] for idx in indices]
+        points = [self.points[int(self.indices[idx])] for idx in indices]
         fetched = {name: view.fetch_many(points) for name, view in self.views.items()}
         samples = [
             {name: data[k] for name, data in fetched.items()}

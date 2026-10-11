@@ -29,6 +29,8 @@ class FindLatestForecastView(View):
     ) -> None:
         super().__init__(ds, variables, unavailable)
         self.init_times = self.ds.init_time.values
+        if not self.ds.indexes["init_time"].is_unique:
+            raise ValueError("Source has repeated labels along 'init_time'.")
 
         # a limit of None means unbounded on that side
         lower, upper = init_time_offset_limits or (None, None)

@@ -107,6 +107,11 @@ def test_fill_returns_a_nan_field_for_a_missing_forecast(three_hourly):
     assert np.isnat(out.init_time.values) and np.isnat(out.lead_time.values)
 
 
+def test_source_needs_unique_init_times():
+    with pytest.raises(ValueError, match="repeated labels along 'init_time'"):
+        FindLatestForecastView(forecast(HOURLY[[0, 3, 3, 6]]))
+
+
 LIMITS = [
     WINDOW,
     None,

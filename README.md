@@ -103,7 +103,7 @@ class DayBeforeView(View):
         return {"time": self.locate("time", point["time"] - np.timedelta64(1, "D"))}
 ```
 
-A label that the source lacks gives the position `None` (or `-1` inside an array of positions), which marks the data as missing. `select` should mark missing data this way rather than raise, and it should not read any data.
+A label that the source lacks gives the position `None` (or `-1` inside an array of positions), which marks the data as missing. The labels along a dimension that a view looks up must be unique; `locate` raises otherwise. `select` should mark missing data this way rather than raise, and it should not read any data.
 
 ## Reading from zarr
 

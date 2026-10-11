@@ -27,6 +27,17 @@ def test_locate_several_labels_marks_missing_with_minus_one(source, times):
     assert Positions(source).locate("time", labels).tolist() == [2, -1, 0]
 
 
+@pytest.mark.parametrize("several", [False, True])
+def test_locate_needs_unique_labels(source, times, several):
+    repeated = source.isel(time=[0, 1, 1, 2])
+    labels = times[[0, 1]] if several else times[1]
+    with pytest.raises(ValueError, match="repeated labels along 'time'"):
+        Positions(repeated).locate("time", labels)
+    # other dimensions of the same source are not affected
+    levels = repeated.assign_coords(lat=[10, 20, 30, 40])
+    assert Positions(levels).locate("lat", 30) == 2
+
+
 def test_arithmetic_on_a_failed_lookup_raises(source):
     position = Positions(source).locate("time", np.datetime64("2021-01-01"))
     with pytest.raises(TypeError):

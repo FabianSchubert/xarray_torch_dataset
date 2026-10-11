@@ -94,7 +94,7 @@ section("where the time goes for one sample (chunk24, lazy), ms")
 ds = open_store(stores / "chunk24.zarr", "lazy")
 dataset = build(ds)
 view = dataset.views["x"]
-point = lambda i: dataset.points[dataset.indices[picks[i]]]  # noqa: E731
+point = lambda i: dataset.points[int(dataset.indices[picks[i]])]  # noqa: E731
 n = len(picks)
 print(f"select                      {timeit(lambda i: view.select(point(i)), n):7.3f}")
 print(f"fetch (lazy, no read)       {timeit(lambda i: view.fetch(point(i)), n):7.3f}")

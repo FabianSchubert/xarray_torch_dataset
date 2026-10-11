@@ -29,7 +29,7 @@ def test_a_point_must_be_accepted_by_every_view(source, times):
     }
     dataset = XrDataset(PointGrid(time=times), views)
 
-    assert dataset.indices == list(range(2, 30))
+    assert dataset.indices.tolist() == list(range(2, 30))
     assert set(dataset[0]) == {"x", "y"}
 
 
@@ -41,6 +41,15 @@ def test_rejected_points_are_counted_for_the_first_view_that_rejects(source, tim
     # z rejects the same two points as x, which are counted for x
     assert dataset.n_rejected == {"x": 2, "y": 1, "z": 0}
     assert len(dataset) + sum(dataset.n_rejected.values()) == len(times)
+
+
+def test_points_can_be_a_plain_list_of_dicts(source, times):
+    points = [{"time": t} for t in times[:5]]
+    dataset = XrDataset(points, {"x": history(source)})
+
+    assert isinstance(dataset.indices, np.ndarray)
+    assert dataset.indices.tolist() == [2, 3, 4]
+    xr.testing.assert_identical(dataset[0]["x"], source[["a"]].isel(time=[0, 1, 2]))
 
 
 def test_rejected_points_can_be_reported_instead(source, times):
@@ -92,7 +101,7 @@ def test_dropping_view_decides_when_views_are_mixed(source, times):
     }
     dataset = XrDataset(PointGrid(time=times), views)
 
-    assert dataset.indices == list(range(30))  # only the last point is dropped
+    assert dataset.indices.tolist() == list(range(30))  # only the last point is dropped
 
 
 def test_transform_receives_the_sample(source, times):
