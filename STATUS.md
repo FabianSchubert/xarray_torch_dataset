@@ -46,7 +46,7 @@ The `examples/` folder has two scripts on random in-memory data. `examples/forec
 
 Other facts:
 
-- **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr` and `dask` for the benchmarks. The package itself imports neither.
+- **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr`, `dask` and `gcsfs` for the benchmarks. The package itself imports neither.
 - **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
 - **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, accepting and rejecting, fetching, filling), `fetch_many` against `fetch`, the two included views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
 - **`README.md`** introduces the parts with a runnable example, shows how to write a view and says how to open zarr stores.
@@ -114,6 +114,35 @@ uv run python benchmarks/fork_hang.py STORES_DIR/chunk24.zarr dask fork 1
 - "Unique steps, then gather" is a hand-written numpy version of what `fetch_many` does. `fetch_many` is 40 to 75 ms slower per batch on the lazy backend, which is the cost of building one `xr.Dataset` per point from the block. On the 1-step store that overhead cancels the gain for this view.
 - Handing xarray one `(batch, time)` indexer takes 400 to 470 ms on the lazy backend whatever the chunking, so `fetch_many` does not use it. Why it is slow has not been investigated.
 
+## WeatherBench 2 experiment (2026-10-11)
+
+The first run on real data: IFS HRES forecasts paired with ERA5, both from the public WeatherBench 2 bucket on a 64 x 32 grid.
+
+**Data.** The forecasts have 5114 init times (every 12 hours, 2016 to 2022) and 41 lead times (every 6 hours to 240 h), in chunks of 4 init times x 1 lead time x the whole field, compressed with Blosc/LZ4. ERA5 has 92,044 time steps (every 6 hours, 1959 to 2021) in chunks of 100 steps. `benchmarks/get_weatherbench2.py` copies three surface variables of the forecasts and the 2 m temperature of ERA5 to local disk byte for byte (5 GB, about 160,000 files, 13 minutes). Opening needs `decode_timedelta=True`, because lead times are stored as integer hours, and a rename of `time` / `prediction_timedelta` to `init_time` / `lead_time`. A local copy has to be opened with `consolidated=False`, since it holds only some of the variables.
+
+**Dataset.** 35,088 points: two years of 6-hourly init times and 12 lead times (6 to 72 h). The forecasts are only 12-hourly, so `FindLatestForecastView` (three variables, window of -6 to 0 h) picks an earlier forecast with a longer lead time for every other point. The target is ERA5 at the valid time, through a three-line `ValidTimeView` defined in `benchmarks/weatherbench2.py`. A sample needs four chunks, one per forecast variable and one of ERA5.
+
+```bash
+uv run python benchmarks/get_weatherbench2.py ~/data/weatherbench2
+uv run python benchmarks/weatherbench2.py ~/data/weatherbench2 cold
+uv run python benchmarks/weatherbench2.py ~/data/weatherbench2
+uv run python benchmarks/weatherbench2.py remote
+```
+
+**Results.** "Cold" evicts the local copy from the page cache before each measurement. Throughput is in samples per second from a shuffled DataLoader with batch size 32, as per-sample reading / `batched=True`.
+
+| Source | Construction | One sample | 0 workers | 4 workers | 8 workers |
+|---|---|---|---|---|---|
+| local, cold | 8.4 s | 11.8 ms | 142 / 159 | 545 / 547 | 773 / 887 |
+| local, cached | 9.0 s | 10.4 ms | 162 / 181 | 554 / 604 | 797 / 892 |
+| bucket | 10.8 s | 915 ms | 2 / 3 | 8 / 16 | 13 / 14 |
+
+- 78 points are rejected, all by the target view, because their valid time lies after the end of ERA5: `n_rejected` is `{'forecast': 0, 'target': 78}`.
+- Construction costs 120 to 150 µs per point and view, more than with `OffsetView`, because the forecast view scans all 5114 init times for every point (see the known issues).
+- A cold local disk makes little difference. This disk reads about 640 MB/s, and the chunks are small.
+- Reading from the bucket is about 90 times slower per sample than from the local copy. The four chunks of a sample are requested one after another, at 200 to 300 ms each. Workers help in proportion, since the time is spent waiting. Each bucket figure covers only about 20 s, which is one to nine batches, so these are rough.
+- `batched=True` gains about 10% locally. `FindLatestForecastView` falls back to one read per point, so only the ERA5 target is read at once. Against the bucket it doubled throughput with 4 workers and made no difference with 8; given how few batches were timed, that is not a reliable difference.
+
 ## Setting up on another machine
 
 ```bash
@@ -178,9 +207,9 @@ Found by reading the code or by measuring; none has a fix yet.
 - `fetch_many` has 40 to 75 ms of overhead per batch of 32 from building one dataset per point. It could be trimmed, for example by letting the transform work on the block.
 - One point that cannot be fetched fails its whole batch.
 
-Whether to finish or remove it should be decided once there are numbers from real data.
+On real forecast data it gained about 10% from local disk (see the WeatherBench 2 experiment), far less than on the synthetic windows, because the forecast view falls back. Whether to finish or remove it is the next decision.
 
 ## Possible next steps
 
-1. Repeat the benchmarks on a store that is not in the page cache, ideally real, compressible data on network storage, since that is where fewer reads should matter most.
-2. With those numbers, decide whether to finish or remove batched reading.
+1. Decide whether to finish or remove batched reading, now that there are numbers from real data (see the WeatherBench 2 experiment).
+2. For remote stores, reading the variables of a sample concurrently looks more promising than batching: per-sample time there is the sum of sequential requests.
