@@ -97,9 +97,7 @@ view = dataset.views["x"]
 point = lambda i: dataset.points[int(dataset.indices[picks[i]])]  # noqa: E731
 n = len(picks)
 print(f"select                      {timeit(lambda i: view.select(point(i)), n):7.3f}")
-print(f"fetch (lazy, no read)       {timeit(lambda i: view.fetch(point(i)), n):7.3f}")
-fetch_load = timeit(lambda i: view.fetch(point(i)).to_array().values, n)
-print(f"fetch + load (2 vars, 4 t)  {fetch_load:7.3f}")
+print(f"fetch (2 vars, 4 t)         {timeit(lambda i: view.fetch(point(i)), n):7.3f}")
 group = zarr.open_group(stores / "chunk24.zarr", mode="r")
 arrays = [group["t2m"], group["u10"]]
 raw = timeit(lambda i: [a[picks[i] : picks[i] + 4] for a in arrays], n)
@@ -108,7 +106,7 @@ raw = timeit(lambda i: [a.oindex[np.arange(picks[i], picks[i] + 4)] for a in arr
 print(f"raw zarr, same data, oindex {raw:7.3f}")
 
 # ---------------------------------------------------------------------------
-section('unavailable="fill" (chunk24, lazy), ms per fetch + load of view x')
+section('unavailable="fill" (chunk24, lazy), ms per fetch of view x')
 filling = build(ds, unavailable="fill").views["x"]
 complete = {"time": ds.time.values[5000]}
 partial = {"time": ds.time.values[1]}  # two of four steps missing
@@ -118,5 +116,5 @@ for name, p in (
     ("partly missing", partial),
     ("absent", absent),
 ):
-    ms = timeit(lambda i, p=p: filling.fetch(p).to_array().values, 100)
+    ms = timeit(lambda i, p=p: filling.fetch(p), 100)
     print(f"{name:15s} {ms:7.3f}")

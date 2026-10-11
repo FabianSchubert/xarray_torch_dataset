@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from xarray_torch_dataset import ToTensors
@@ -19,3 +20,10 @@ def test_to_tensors_stacks_variables_first(source):
 def test_to_tensors_keeps_nan(source):
     filled = source[["a"]].isel(time=[0, 1]).where(False)
     assert torch.isnan(ToTensors()({"x": filled})["x"]).all()
+
+
+def test_to_tensors_does_not_broadcast_variables_of_different_dimensions(source):
+    static = source.a.isel(time=0, drop=True).rename("static")
+    mixed = source[["a"]].isel(time=[0, 1]).assign(static=static)
+    with pytest.raises(ValueError, match="view 'x' have different dimensions"):
+        ToTensors()({"x": mixed})

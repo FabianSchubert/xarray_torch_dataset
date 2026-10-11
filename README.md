@@ -84,7 +84,11 @@ A filling view never rejects a point, so the other views decide which points the
 
 All of this is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
-**Transforms.** A transform receives `{view name: xr.Dataset}`. `ToTensors` stacks the variables of each view into one float tensor, variables first.
+**Transforms.** A transform receives `{view name: xr.Dataset}` and returns the sample. The data is already in memory at that point: reading is the views' job, and a transform only reshapes what was read. Because it gets xarray objects, it can use names, dimensions and coordinates to build what the model needs.
+
+`ToTensors` is the one included. It stacks the variables of each view into one `float32` tensor, variables first, and keeps only the values. The variables of a view must have the same dimensions; it raises otherwise instead of broadcasting them.
+
+A `DataLoader` needs a transform that returns tensors or arrays, because torch cannot batch xarray objects. Without a transform, `dataset[i]` returns the xarray data itself, which is useful for looking at samples.
 
 ## Writing a view
 

@@ -107,16 +107,21 @@ class View(ABC):
         return all(e.all() for e in exists.values())
 
     def fetch(self, point: Point) -> xr.Dataset:
-        """Read the selection. Override for views that are not a selection."""
+        """Read the selection into memory.
+
+        Reading is finished when this returns, so a transform works on
+        data that is loaded. Override this for views that are not a
+        selection; an override has to return loaded data as well.
+        """
         indexers = self.select(point)
-        return self._take(self.ds, indexers, self._exists(indexers), point)
+        return self._take(self.ds, indexers, self._exists(indexers), point).load()
 
     def fetch_many(self, points: Sequence[Point]) -> list[xr.Dataset]:
         """What `fetch` gives for each of the points, from a single read.
 
         Reads every position that some point needs once, into memory, and
         takes each point's selection from that block. The results are the
-        same as from `fetch`, except that they are already loaded.
+        same as from `fetch`.
 
         Along several dimensions the block is the outer product of the
         positions needed along each. If that is more data than the points
@@ -310,6 +315,11 @@ def _as_float(ds: xr.Dataset, coords: Sequence[Hashable]) -> xr.Dataset:
 
 class XrDataset(Dataset):
     """Serves, for each accepted point, ``{name: view.fetch(point)}``.
+
+    The data of each view is an ``xr.Dataset`` that is loaded into memory.
+    `transform` receives that dict and returns the sample. A DataLoader
+    needs a transform that returns tensors or arrays, such as `ToTensors`,
+    because torch cannot batch xarray objects.
 
     Points that some view rejects are dropped at construction, or
     reported if ``rejected="raise"``. `n_rejected` says how many points

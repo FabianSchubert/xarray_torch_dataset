@@ -209,6 +209,15 @@ def test_fill_reads_only_the_steps_that_exist(source, recording):
     assert np.isnan(values[2]).all()
 
 
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_fetch_returns_loaded_data(recording, unavailable):
+    lazy, read = recording
+    out = Positions(lazy, ["a"], unavailable=unavailable).fetch(at(time=[3, 4]))
+
+    assert sorted(set(read)) == [3, 4]  # read by fetch, not by a later access
+    assert isinstance(out.a.variable.data, np.ndarray)
+
+
 @pytest.mark.parametrize("positions", [None, 31, [-1, 31]])
 def test_fill_reads_nothing_if_nothing_exists(recording, positions):
     lazy, read = recording
