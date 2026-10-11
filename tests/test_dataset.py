@@ -2,13 +2,16 @@ import numpy as np
 import pytest
 import torch
 import xarray as xr
+from conftest import DAY
 
 from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
 
 def history(source, **kwargs):
-    """The point's step and the two before it."""
-    return OffsetView(source, ["a"], offsets={"time": [-2, -1, 0]}, **kwargs)
+    """The point's day and the two before it."""
+    return OffsetView(
+        source, ["a"], offsets={"time": [-2 * DAY, -DAY, 0 * DAY]}, **kwargs
+    )
 
 
 def test_points_a_view_cannot_serve_are_dropped(source, times):
@@ -22,7 +25,7 @@ def test_points_a_view_cannot_serve_are_dropped(source, times):
 def test_a_point_must_be_accepted_by_every_view(source, times):
     views = {
         "x": history(source),
-        "y": OffsetView(source, ["a"], offsets={"time": [1]}),
+        "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),
     }
     dataset = XrDataset(PointGrid(time=times), views)
 
@@ -31,7 +34,7 @@ def test_a_point_must_be_accepted_by_every_view(source, times):
 
 
 def test_rejected_points_are_counted_for_the_first_view_that_rejects(source, times):
-    late = OffsetView(source, ["a"], offsets={"time": [1]})  # rejects the last
+    late = OffsetView(source, ["a"], offsets={"time": [DAY]})  # rejects the last
     views = {"x": history(source), "y": late, "z": history(source)}
     dataset = XrDataset(PointGrid(time=times), views)
 
@@ -56,6 +59,23 @@ def test_dataset_without_points_is_an_error(source):
         XrDataset([], {"x": history(source)})
 
 
+def test_without_validation_every_point_is_kept_and_fails_when_fetched(source, times):
+    class NeverAsked(OffsetView):
+        def accepts(self, point):
+            raise AssertionError("accepts must not be called")
+
+    views = {"x": NeverAsked(source, ["a"], offsets={"time": [-2 * DAY, 0 * DAY]})}
+    dataset = XrDataset(PointGrid(time=times), views, validate=False)
+
+    assert len(dataset) == len(times)
+    assert dataset.n_rejected is None
+    xr.testing.assert_identical(dataset[2]["x"], source[["a"]].isel(time=[0, 2]))
+    with pytest.raises(IndexError, match="leaves the source"):
+        dataset[0]
+    with pytest.raises(IndexError, match="leaves the source"):
+        dataset.__getitems__([5, 1])
+
+
 def test_filling_view_never_drops_a_point(source, times):
     views = {"x": history(source, unavailable="fill")}
     dataset = XrDataset(PointGrid(time=times), views, rejected="raise")
@@ -68,7 +88,7 @@ def test_filling_view_never_drops_a_point(source, times):
 def test_dropping_view_decides_when_views_are_mixed(source, times):
     views = {
         "x": history(source, unavailable="fill"),
-        "y": OffsetView(source, ["a"], offsets={"time": [1]}),
+        "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),
     }
     dataset = XrDataset(PointGrid(time=times), views)
 
@@ -97,7 +117,7 @@ def test_batches_through_a_dataloader(source, times):
 def test_a_batch_of_samples_equals_the_single_samples(source, times):
     views = {
         "x": history(source, unavailable="fill"),
-        "y": OffsetView(source, ["a"], offsets={"time": [1]}),
+        "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),
     }
     dataset = XrDataset(PointGrid(time=times), views)
     indices = [0, 1, 7, 29, 7]

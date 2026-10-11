@@ -252,6 +252,10 @@ class XrDataset(Dataset):
     reported if ``rejected="raise"``. `n_rejected` says how many points
     each view rejected; a point counts for the first view that rejected it.
 
+    ``validate=False`` skips that check, which takes time on many points.
+    Every point is then kept, `n_rejected` is ``None``, and a point that a
+    view would have rejected raises an ``IndexError`` when it is fetched.
+
     A DataLoader that batches asks for a whole batch at once, which costs
     one read per view instead of one per sample (see `View.fetch_many`).
     """
@@ -262,12 +266,20 @@ class XrDataset(Dataset):
         views: Mapping[str, View],
         transform: Callable | None = None,
         rejected: Literal["drop", "raise"] = "drop",
+        validate: bool = True,
     ):
         self.points = points
         self.views = views
         self.transform = transform
         if not len(points):
             raise ValueError("There are no points.")
+        self.indices: Sequence[int]
+        self.n_rejected: dict[str, int] | None
+        if not validate:
+            self.indices = range(len(points))
+            self.n_rejected = None
+            return
+
         self.indices = []
         self.n_rejected = dict.fromkeys(views, 0)
         for i in range(len(points)):

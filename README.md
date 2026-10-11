@@ -39,12 +39,14 @@ targets = xr.Dataset(
     {"precip": (dims, np.random.rand(31, 8, 8))}, coords={"time": times}
 )
 
+last_four_days = np.arange(-3, 1) * np.timedelta64(1, "D")
+
 dataset = XrDataset(
     points=PointGrid(time=times),
     views={
-        # the point's time step and the three before it
-        "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": [-3, -2, -1, 0]}),
-        # the point's time step only
+        # the point's day and the three days before it
+        "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": last_four_days}),
+        # the point's day only
         "y": OffsetView(targets, ["precip"]),
     },
     transform=ToTensors(),
@@ -62,12 +64,11 @@ print({name: tensor.shape for name, tensor in batch.items()})
 
 **Points.** Anything with `__len__` and `__getitem__(i)` that returns a point will do, including a plain list of dicts. `PointGrid(time=times, lat=lats)` gives every combination of the labels without building the list.
 
-**Views.** Three are included:
+**Views.** A view is usually written for the application at hand (see below). Two are included, as examples and for the common cases:
 
 | View | Selects |
 |---|---|
-| `OffsetView` | Fixed positional offsets from the point, such as a history window. Dimensions without offsets are selected at exactly the point's label. |
-| `SameWeekdayView` | The same weekday in each of the weeks before the point. |
+| `OffsetView` | Fixed offsets from the point's labels, such as the last four hours. Offsets are added to the label and looked up in the source, so along time they are durations, not numbers of steps. Dimensions without offsets are selected at exactly the point's label. |
 | `FindLatestForecastView` | From a forecast source with `init_time` and `lead_time`, the most recent forecast for the point's valid time. This aligns, say, a 3-hourly forecast with hourly points. |
 
 **Unavailable data.** A source may not have everything a point asks for: a history window can reach back before the source starts, or the source may lack the point's label. What happens then is decided in two places.
@@ -76,6 +77,8 @@ print({name: tensor.shape for name, tensor in batch.items()})
 - The dataset takes `rejected="drop"` (the default) or `rejected="raise"`. With `"drop"`, points that some view rejected are left out. With `"raise"`, they are an error at construction, which helps to catch a misaligned source.
 
 `dataset.n_rejected` says how many points each view rejected, for example `{"x": 3, "y": 0}`. A few points rejected by a history view are an edge effect; most points rejected by one view usually mean that its source is on a different grid. A point rejected by several views is counted for the first of them.
+
+Asking every view about every point happens when the dataset is constructed and takes time on large point sets (roughly 0.1 ms per point and view). `XrDataset(..., validate=False)` skips it. Every point is then kept, and one that a view would have rejected raises an `IndexError` when it is fetched, which may be well into an epoch. It never returns wrong data. Use it when you already know that every point can be served.
 
 A filling view never rejects a point, so the other views decide which points the dataset has. This is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 

@@ -19,7 +19,7 @@ import zarr
 from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
 stores = Path(sys.argv[1])
-HISTORY = np.arange(-3, 1)
+HISTORY = np.arange(-3, 1) * np.timedelta64(1, "h")
 rng = np.random.default_rng(0)
 
 

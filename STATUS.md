@@ -1,6 +1,6 @@
 # Project status
 
-Snapshot as of 2026-10-10. This file records where the project stands and which design questions are open, so work can continue on another machine.
+Snapshot as of 2026-10-11. This file records where the project stands and which design questions are open, so work can continue on another machine.
 
 ## What this project is
 
@@ -29,16 +29,15 @@ The package lives in `src/xarray_torch_dataset/`; everything below is re-exporte
   - `accepts(point)`: whether the view can serve the point. Always true with `unavailable="fill"` (without calling `select`); otherwise it dry-runs `select` and checks that every returned position lies inside the source.
   - `fetch(point)`: reads the selection, after the same check. Override it for views that are not a selection (data-dependent choices, computed values).
   - `fetch_many(points)`: what `fetch` gives for each point, as a list, from a single read. It reads every position that some point needs once, loads that block into memory, and takes each point's selection from it, so points may have different shapes. It falls back to one `fetch` per point in two cases: when the view overrides `fetch`, and when the block would hold more elements than the points ask for. The second case arises because along several dimensions the block is an outer product; it applies to `FindLatestForecastView`, where each point needs one scattered (init time, lead time) pair.
-- **`XrDataset`** (`base.py`): a `torch.utils.data.Dataset`. At construction it keeps only the points that every view accepts. `rejected="drop"` (the default) drops the rest, `rejected="raise"` reports them, and it always raises if no point survives. `n_rejected` holds the number of rejected points per view, each point counted for the first view that rejected it, and the error messages include it. It also implements `__getitems__`, which a batching `DataLoader` calls with all indices of a batch; that goes through `fetch_many`, so a batch costs one read per view instead of one per sample.
+- **`XrDataset`** (`base.py`): a `torch.utils.data.Dataset`. At construction it keeps only the points that every view accepts. `rejected="drop"` (the default) drops the rest, `rejected="raise"` reports them, and it always raises if no point survives. `validate=False` skips the check: every point is kept, `n_rejected` is `None`, and a point that a view would have rejected raises an `IndexError` when it is fetched. `n_rejected` otherwise holds the number of rejected points per view, each point counted for the first view that rejected it, and the error messages include it. It also implements `__getitems__`, which a batching `DataLoader` calls with all indices of a batch; that goes through `fetch_many`, so a batch costs one read per view instead of one per sample.
 - **`PointGrid`** (`points.py`): all combinations of the given coordinate labels, computed lazily, e.g. `PointGrid(time=times, lat=lats)`.
-- **Ready-made views** live in the `views/` subpackage, one module per kind, and are re-exported from `xarray_torch_dataset.views` and from the package root.
-- **`OffsetView`** (`views/offset.py`): the declarative view. `offsets={"time": [-3, -2, -1, 0]}` selects positional steps relative to the point, contiguous or not. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored. It accepts `unavailable` like every view; with `"fill"`, steps that leave the source come back as NaN.
-- **`SameWeekdayView`** (`views/weekday.py`): the same weekday in each of the `weeks` weeks before the point, along `time`. It counts durations rather than steps, so it shows free-form selection logic through `locate`.
-- **`FindLatestForecastView`** (`views/forecast.py`): for forecast sources with `init_time` and `lead_time`. A point's init time and lead time give a valid time; among the source's init times within `init_time_offset_limits` of the point's init time, the view selects the most recent one that has a lead time reaching that valid time. This lets a coarser forecast (say, 3-hourly inits) be aligned with points on a finer grid.
+- **Two views are included**, as examples of the two kinds of view and as what the tests and benchmarks run against. The package is meant to be imported into an application that writes its own views. They live in the `views/` subpackage, one module per kind, and are re-exported from `xarray_torch_dataset.views` and from the package root.
+- **`OffsetView`** (`views/offset.py`): the declarative view. `offsets={"time": np.arange(-3, 1) * np.timedelta64(1, "h")}` selects the point's time and the three hours before it. Offsets are added to the point's label and the result is looked up with `locate`, so along time they are durations, not numbers of steps, and a label the source lacks is unavailable. Offsets along a time dimension must be timedeltas; integers raise a `TypeError`. Dimensions without offsets are selected at exactly the point's label and dropped from the result. Point entries the source has no index for are ignored.
+- **`FindLatestForecastView`** (`views/forecast.py`): the view with free-form selection logic. For forecast sources with `init_time` and `lead_time`. A point's init time and lead time give a valid time; among the source's init times within `init_time_offset_limits` of the point's init time, the view selects the most recent one that has a lead time reaching that valid time. This lets a coarser forecast (say, 3-hourly inits) be aligned with points on a finer grid.
 
 - **Ready-made transforms** live in the `transforms/` subpackage, laid out like `views/`. So far it holds **`ToTensors`** (`transforms/tensors.py`), which stacks each view's variables into one float tensor.
 
-The `examples/` folder has two scripts on random in-memory data. `examples/forecasts.py` aligns an hourly and a 3-hourly forecast with `FindLatestForecastView`, filling the points the coarser one cannot serve. `examples/history_windows.py` builds a dataset from two `OffsetView`s (a four-step history and a target) and a `SameWeekdayView` (the same weekday in the two previous weeks). It prints:
+The `examples/` folder has two scripts on random in-memory data. `examples/forecasts.py` aligns an hourly and a 3-hourly forecast with `FindLatestForecastView`, filling the points the coarser one cannot serve. `examples/history_windows.py` builds a dataset from three `OffsetView`s: the last four days, the same weekday in the two previous weeks, and the point's own day as the target. It prints:
 
 ```
 9 of 16 points are kept
@@ -49,7 +48,7 @@ Other facts:
 
 - **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr` and `dask` for the benchmarks. The package itself imports neither.
 - **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
-- **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, accepting and rejecting, fetching, filling), `fetch_many` against `fetch`, the three ready-made views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
+- **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, accepting and rejecting, fetching, filling), `fetch_many` against `fetch`, the two included views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
 - **`README.md`** introduces the parts with a runnable example, shows how to write a view and says how to open zarr stores.
 - **Benchmarks** live in `benchmarks/` and are run by hand against zarr stores on disk; see the next section.
 
@@ -57,7 +56,7 @@ Other facts:
 
 The package works on a zarr store without changes: samples are identical to in-memory ones, and validation does no I/O.
 
-**Setup.** `benchmarks/make_stores.py` writes one synthetic year of hourly data (8760 x 128 x 128, two float32 variables, about 1 GB) as zarr v3 three times, with time chunks of 1, 24 and 168 steps. The dataset under test has a four-step `OffsetView` history on both variables, a single-step target and `ToTensors`. Two ways of opening a store are compared: "lazy" is `xr.open_dataset(path, engine="zarr", chunks=None)`, and "dask" is `xr.open_zarr(path)`. The machine has 8 cores. The data is random, so it does not compress, and the stores were in the OS page cache, so the numbers measure decoding and framework overhead, not disk or network.
+**Setup.** `benchmarks/make_stores.py` writes one synthetic year of hourly data (8760 x 128 x 128, two float32 variables, about 1 GB) as zarr v3 three times, with time chunks of 1, 24 and 168 steps. The dataset under test has an `OffsetView` with the last four hours of both variables, a single-step target and `ToTensors`. Two ways of opening a store are compared: "lazy" is `xr.open_dataset(path, engine="zarr", chunks=None)`, and "dask" is `xr.open_zarr(path)`. The machine has 8 cores. The data is random, so it does not compress, and the stores were in the OS page cache, so the numbers measure decoding and framework overhead, not disk or network.
 
 ```bash
 uv run python benchmarks/make_stores.py STORES_DIR     # about 3 GB
@@ -68,7 +67,7 @@ uv run python benchmarks/fork_hang.py STORES_DIR/chunk24.zarr dask fork 1
 
 **Forked workers can hang with dask.** If the parent process reads a sample from a dask-backed dataset and a `DataLoader` then starts forked workers (the default on Linux), the first batch never arrives. It reproduced in three of three attempts with `benchmarks/fork_hang.py`. The lazy backend is not affected. With dask, each of these avoids the hang: not reading in the parent first, the `spawn` or `forkserver` start method (about 8 s of worker start-up), or dask's synchronous scheduler (`DASK_SCHEDULER=synchronous`). The cause was not traced; see the design decisions for how it is handled.
 
-**Per-sample cost** (`per_sample.py`), in ms per `dataset[i]` at random indices:
+**Per-sample cost** (`per_sample.py`), in ms per `dataset[i]` at random indices. The table and the two tables further down were measured on 2026-10-10 with an `OffsetView` that counted positions; the reads are the same with the current one, and a rerun of `per_sample.py` gave figures within 15% of this table. `loading.py` was not rerun in full. The figures in the list below are from that rerun (2026-10-11).
 
 | Time chunk | In memory | Lazy | Dask |
 |---|---|---|---|
@@ -76,10 +75,10 @@ uv run python benchmarks/fork_hang.py STORES_DIR/chunk24.zarr dask fork 1
 | 24 | 1.2 | 11.2 | 18.6 |
 | 168 | | 45.5 | 44.4 |
 
-- Framework overhead is about 1 ms per sample. For the history view on the 24-step store, `select` takes 0.035 ms and fetch plus load 7.3 ms, against 6.7 ms for the same read through raw zarr.
+- Framework overhead is about 1 ms per sample. For the history view on the 24-step store, `select` takes 0.125 ms and fetch plus load 7.7 ms, against 6.2 ms for the same read through raw zarr.
 - Dask is slower than lazy on small chunks and equal on large ones.
-- Validation takes about 0.8 s for 8760 points and 2 views on every backend, which is roughly 45 µs per point and view.
-- With `unavailable="fill"`, a sample that is entirely missing takes 9.4 ms against 7.3 ms for a complete one.
+- Validation takes about 1.6 s for 8760 points and 2 views on every backend, which is roughly 90 µs per point and view.
+- With `unavailable="fill"`, a sample that is entirely missing takes 9.7 ms against 6.9 ms for a complete one.
 
 **DataLoader throughput** (`loading.py`), in samples per second, shuffled, batch size 32, `forkserver` workers. "Per sample" disables `__getitems__`; "one read" is the default.
 
@@ -146,6 +145,8 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
 - **A failed scalar lookup is `None`, not `-1`.** Arithmetic on `-1` gives positions that look valid (`-1 + [1, 2]` is `[0, 1]`), so a view that forgot to check would silently serve unrelated data. `None` raises a `TypeError` on that line instead. numpy's masked value and NaN were tried as markers that survive arithmetic and rejected: a masked value silently becomes position 0 when converted to a plain array, and NaN turns positions into floats. Array lookups still use `-1`, because an integer array cannot hold `None`; arithmetic on such an array keeps the old hazard.
 - **A batch is read as one block, then split per point.** `fetch_many` returns a list with one dataset per point instead of one stacked dataset. Points with different shapes therefore need no special handling, a view's contract stays "one dataset per point", and stacking stays with torch's collate function. The price is the per-point overhead measured above.
 - **One vocabulary for points a view cannot serve: views reject, the dataset handles what was rejected.** The view option is `unavailable="reject"` / `"fill"`, the method that asks a view is `accepts(point)`, and the dataset option is `rejected="drop"` / `"raise"`. These were `missing="drop"` / `"fill"`, `is_valid(point)` and `invalid="drop"` / `"raise"`. The old names had three problems. "Drop" was used at both levels, and wrongly for the view, which drops nothing: the dataset drops the point or raises. "Invalid" sounded like a separate condition, although a point was invalid exactly when a view could not serve it. And "missing" left open what is missing; the option is about data the source cannot supply for a complete point. It covers neither NaN values stored in the source nor a point that lacks a label the view needs, which is an error.
+- **The included views are examples, and `OffsetView` works by label.** The package is a general-purpose tool; applications write their own views. Two views stay, one of each kind: `OffsetView` (declarative) and `FindLatestForecastView` (free-form logic). They are also what the tests and benchmarks run against. `OffsetView` used to count positions along the source's index, so on a time axis with gaps, or on a source of another resolution, a window silently covered the wrong period. It now adds the offsets to the point's label and looks the result up, which makes a label the source lacks unavailable instead. `SameWeekdayView` was removed, being this view with offsets of -14 and -7 days. Matching only exact labels is deliberate: a tolerance would bring back a quieter version of the same problem.
+- **Validation can be switched off, and then fails late but never silently.** With `validate=False` the dataset keeps every point without asking the views. `fetch` checks the positions again before reading, so a point that would have been rejected raises an `IndexError` at that moment instead of returning other data. The price is when it fails: possibly hours into training, inside a DataLoader worker, and for a whole batch at once when batches are read through `fetch_many`. Views with `unavailable="fill"` behave the same either way. A view that overrides `fetch` has to do its own checking.
 - **Rejected points are dropped by default, and counted.** Any dataset with a history window rejects a few points at the edges, so raising by default would fail on nearly every first use. To keep a misaligned source visible all the same, `XrDataset.n_rejected` records the number of rejected points per view, and the error messages include it. A point counts for the first view that rejected it: that is free, because the check stops there, whereas counting every rejecting view would mean asking all views about all points. There is no warning, since it would appear for every correct dataset.
 - **`PointGrid` stays.** In one dimension a list comprehension does the same job, but point sets for forecasts have several dimensions (init time, lead time, possibly members or locations) and quickly reach hundreds of thousands of points. As a list of dicts that is a large object that is also copied into every DataLoader worker; `PointGrid` stores only the label arrays. A grid also knows that its dimensions are independent, which could later let validation run per dimension instead of per point. It cannot express arbitrary combinations of labels; for those, a list of dicts remains the way.
 - **The dask fork hang is documented, not fixed.** It most likely comes from forking a process whose dask thread pool is already running, which this package cannot repair, and the cause was deliberately not traced. The recommendation, given in the README, is to open stores without dask, `xr.open_dataset(path, engine="zarr", chunks=None)`, which avoids the hang and in the benchmarks was faster on 1-step and 24-step chunks and about equal on 168-step chunks. For those who need dask, the `forkserver` start method or dask's synchronous scheduler work. There is no runtime warning for dask-backed sources, because it would also fire for these safe configurations.
@@ -153,15 +154,14 @@ The first version had four abstract classes: `Anchor`, `Sampler`, `View` and `Xr
 
 ## Open questions
 
-1. **Steps versus durations.** `OffsetView` counts positional steps along the source's index. On a time axis with gaps, or across sources with different resolutions, a step window covers the wrong period without any error. A duration-based view (or option) is not designed yet.
-2. **Validation cost.** Validation is a Python loop over all points and views, at roughly 45 µs per point and view. Extrapolated, that is about 90 s for a million points with two views; it has not been run at that size.
-3. **Batched fetching** is prototyped (`fetch_many`, `__getitems__`) but not settled:
+1. **Validation cost.** Validation is a Python loop over all points and views, at roughly 90 µs per point and view with `OffsetView`. Extrapolated, that is about 3 minutes for a million points with two views; it has not been run at that size. Looking labels up costs more than the position arithmetic of the earlier `OffsetView` (`select` went from 0.035 to 0.125 ms). The cost is per call, so looking up the labels of many points at once would be the way to bring it down. Until then `validate=False` avoids the cost for point sets that are known to be servable.
+2. **Batched fetching** is prototyped (`fetch_many`, `__getitems__`) but not settled:
    - Views that need scattered elements along several dimensions, such as `FindLatestForecastView`, fall back to one read per point. A pointwise read would serve them, but xarray's vectorized indexing was slow in the test above.
    - The fallback rule counts elements, not chunks. Reading a somewhat larger block can still be cheaper when it touches the same chunks.
    - The per-point overhead of `fetch_many` could be trimmed, for example by letting the transform work on the block.
    - `__getitems__` is always on. There is no switch to read sample by sample, short of setting `__getitems__ = None` on a subclass as the benchmark does.
-4. **Rough edges of `unavailable="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources; on zarr an entirely missing sample costs as much as a complete one. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
-5. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
+3. **Rough edges of `unavailable="fill"`.** A filled sample still reads real data (position 0 stands in for each missing position) before masking it, which costs I/O on lazy sources; on zarr an entirely missing sample costs as much as a complete one. Integer variables become float in filled samples only, so dtypes can differ between samples. If every view fills, no point is ever dropped, even one that is NaN in all sources; a rule like "at least one view must have data" would belong in `XrDataset`.
+4. **What a transform receives.** `fetch` returns an `xr.Dataset`, and `ToTensors` assumes all variables in a view share the same dims because it calls `to_array()`. That is also where lazy data actually gets loaded.
 
 ## Known issues
 
@@ -169,11 +169,10 @@ Found by reading the code; none has a test or a fix yet.
 
 - **`locate` assumes a unique index.** With duplicate labels, a scalar lookup returns a slice or a boolean mask instead of a position, and a lookup of several labels raises. Raising a clear error for a non-unique index would be the minimal fix.
 - **`_fill` blanks variables that lack the masked dimension.** It masks the whole dataset along each dimension with unavailable positions. If only some entries of an array of positions are unavailable, a variable without that dimension has nothing unavailable but comes back entirely NaN.
-- **`FindLatestForecastView.select` scans every init time for every point.** That adds to the validation cost (question 2) on long forecast archives.
+- **`FindLatestForecastView.select` scans every init time for every point.** That adds to the validation cost (question 1) on long forecast archives.
 - **`XrDataset.indices` is a Python list of ints.** At millions of points it costs memory, and forked DataLoader workers end up copying it; a numpy array would avoid both.
 
 ## Possible next steps
 
 1. Repeat the benchmarks on a store that is not in the page cache, ideally real, compressible data on network storage, since that is where fewer reads should matter most.
-2. Settle batched fetching (question 3), starting with the forecast view.
-3. Design duration-based windows (question 1).
+2. Settle batched fetching (question 2), starting with the forecast view.

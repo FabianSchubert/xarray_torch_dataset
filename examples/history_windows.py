@@ -1,7 +1,7 @@
 """
 Windows along a time axis: a dataset built from points, views and a
-transform. The inputs are a four-step history and the same weekday in the
-two previous weeks; the target is the point's own time step.
+transform. The inputs are the last four days and the same weekday in the
+two previous weeks; the target is the point's own day.
 """
 
 import numpy as np
@@ -11,7 +11,6 @@ import xarray as xr
 from xarray_torch_dataset import (
     OffsetView,
     PointGrid,
-    SameWeekdayView,
     ToTensors,
     XrDataset,
 )
@@ -34,11 +33,17 @@ if __name__ == "__main__":
     # are dropped by the dataset; no offset needs to be matched by hand.
     points = PointGrid(time=inputs.time.values[::2])
 
+    # Offsets are durations: they are added to the point's time, and the
+    # result is looked up in the source.
+    day = np.timedelta64(1, "D")
+    last_four_days = np.arange(-3, 1) * day
+    same_weekday = np.array([-14, -7]) * day
+
     dataset = XrDataset(
         points=points,
         views={
-            "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": range(-3, 1)}),
-            "x_weekly": SameWeekdayView(inputs, ["t2m"], weeks=2),
+            "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": last_four_days}),
+            "x_weekly": OffsetView(inputs, ["t2m"], offsets={"time": same_weekday}),
             "y": OffsetView(targets, ["precip"]),
         },
         transform=ToTensors(),

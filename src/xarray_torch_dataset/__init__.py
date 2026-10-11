@@ -4,7 +4,6 @@ from xarray_torch_dataset.transforms import ToTensors
 from xarray_torch_dataset.views import (
     FindLatestForecastView,
     OffsetView,
-    SameWeekdayView,
 )
 
 __all__ = [
@@ -14,7 +13,6 @@ __all__ = [
     "Point",
     "PointGrid",
     "Points",
-    "SameWeekdayView",
     "ToTensors",
     "View",
     "XrDataset",

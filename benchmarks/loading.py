@@ -18,7 +18,7 @@ import xarray as xr
 
 from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
-HISTORY = np.arange(-3, 1)
+HISTORY = np.arange(-3, 1) * np.timedelta64(1, "h")
 BATCH = 32
 
 

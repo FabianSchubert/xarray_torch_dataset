@@ -30,7 +30,8 @@ def main():
         ds = xr.open_dataset(path, engine="zarr", chunks=None, consolidated=False)
     else:
         ds = xr.open_zarr(path, consolidated=False)
-    views = {"x": OffsetView(ds, ["t2m", "u10"], offsets={"time": np.arange(-3, 1)})}
+    history = np.arange(-3, 1) * np.timedelta64(1, "h")
+    views = {"x": OffsetView(ds, ["t2m", "u10"], offsets={"time": history})}
     dataset = XrDataset(PointGrid(time=ds.time.values), views, transform=ToTensors())
     if touch == "1":
         dataset[0]
