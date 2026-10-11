@@ -112,6 +112,23 @@ def test_source_needs_unique_init_times():
         FindLatestForecastView(forecast(HOURLY[[0, 3, 3, 6]]))
 
 
+def test_source_needs_unique_lead_times():
+    with pytest.raises(ValueError, match="repeated labels along 'lead_time'"):
+        FindLatestForecastView(forecast(HOURLY[::3], LEADS[[0, 1, 1, 2]]))
+
+
+def test_points_may_use_other_time_units_than_the_source(three_hourly):
+    view = FindLatestForecastView(three_hourly, init_time_offset_limits=WINDOW)
+    in_minutes = {
+        "init_time": HOURLY[8].astype("datetime64[m]"),
+        "lead_time": np.timedelta64(5 * 60, "m"),
+    }
+    assert view.select(in_minutes) == view.select(point(init=8, lead=5))
+    # half an hour off the grid of valid times, so no lead time reaches it
+    in_minutes["lead_time"] += np.timedelta64(30, "m")
+    assert view.select(in_minutes) == {"init_time": None, "lead_time": None}
+
+
 LIMITS = [
     WINDOW,
     None,

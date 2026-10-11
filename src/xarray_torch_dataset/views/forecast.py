@@ -28,34 +28,51 @@ class FindLatestForecastView(View):
         unavailable: Literal["reject", "fill"] = "reject",
     ) -> None:
         super().__init__(ds, variables, unavailable)
-        self.init_times = self.ds.init_time.values
-        if not self.ds.indexes["init_time"].is_unique:
-            raise ValueError("Source has repeated labels along 'init_time'.")
-
+        for dim in ("init_time", "lead_time"):
+            if not self.ds.indexes[dim].is_unique:
+                raise ValueError(f"Source has repeated labels along {dim!r}.")
         # a limit of None means unbounded on that side
-        lower, upper = init_time_offset_limits or (None, None)
-        self.init_time_offset_limits = (
-            np.timedelta64(-1_000_000, "D") if lower is None else lower,
-            np.timedelta64(1_000_000, "D") if upper is None else upper,
-        )
+        self.init_time_offset_limits = init_time_offset_limits or (None, None)
+
+        # Sorted copies of both coordinates to search in, and the position
+        # in the source that each sorted entry came from.
+        init_times, lead_times = self.ds.init_time.values, self.ds.lead_time.values
+        self._init_order = np.argsort(init_times)
+        self._init_times = init_times[self._init_order]
+        self._lead_order = np.argsort(lead_times)
+        self._lead_times = lead_times[self._lead_order]
 
     def select(self, point: Point) -> Indexers:
-        valid_time = point["init_time"] + point["lead_time"]
+        init_time = point["init_time"]
+        valid_time = init_time + point["lead_time"]
 
-        # positions of the init times inside the window around the point's
+        # An init time can only serve the point if one of the source's lead
+        # times reaches the valid time from it...
+        earliest = valid_time - self._lead_times[-1]
+        latest = valid_time - self._lead_times[0]
+        # ...and if it lies in the window around the point's init time.
         lower, upper = self.init_time_offset_limits
-        offsets = self.init_times - point["init_time"]
-        candidates = np.flatnonzero((offsets >= lower) & (offsets <= upper))
+        if lower is not None:
+            earliest = max(earliest, init_time + lower)
+        if upper is not None:
+            latest = min(latest, init_time + upper)
+        start = np.searchsorted(self._init_times, earliest, side="left")
+        stop = np.searchsorted(self._init_times, latest, side="right")
 
-        # the lead time each candidate needs to reach the valid time, as a
-        # position along lead_time (-1 where the source has no such lead)
-        leads = self.locate("lead_time", valid_time - self.init_times[candidates])
-        found = leads >= 0
-        if not found.any():
-            # None marks a missing position, so the point is dropped or
+        # The lead time each of these candidates needs to reach the valid
+        # time, and where it would be among the source's lead times.
+        needed = valid_time - self._init_times[start:stop]
+        at = np.searchsorted(self._lead_times, needed)
+        at = np.minimum(at, len(self._lead_times) - 1)
+        found = np.flatnonzero(self._lead_times[at] == needed)
+        if not found.size:
+            # None marks a missing position, so the point is rejected or
             # filled with NaN
             return {"init_time": None, "lead_time": None}
 
-        candidates, leads = candidates[found], leads[found]
-        latest = np.argmax(self.init_times[candidates])
-        return {"init_time": candidates[latest], "lead_time": leads[latest]}
+        # the candidates are in order of time, so the last match is the latest
+        k = found[-1]
+        return {
+            "init_time": self._init_order[start + k],
+            "lead_time": self._lead_order[at[k]],
+        }
