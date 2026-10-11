@@ -1,4 +1,4 @@
-"""DataLoader throughput, and one read per batch against one per sample.
+"""DataLoader throughput on the synthetic zarr stores.
 
 Workers are started with forkserver: with the dask backend, forked workers
 hang once the parent has read from the store (see ``fork_hang.py``).
@@ -28,101 +28,41 @@ def open_store(path, backend):
     return xr.open_zarr(path, consolidated=False)
 
 
-def build(ds, batched=True):
+def build(ds):
     views = {
         "x": OffsetView(ds, ["t2m", "u10"], offsets={"time": HISTORY}),
         "y": OffsetView(ds, ["t2m"]),
     }
     points = PointGrid(time=ds.time.values)
-    return XrDataset(points, views, transform=ToTensors(), batched=batched)
-
-
-def timeit(fn, n):
-    start = time.perf_counter()
-    for i in range(n):
-        fn(i)
-    return (time.perf_counter() - start) / n * 1e3
+    return XrDataset(points, views, transform=ToTensors())
 
 
 def loaders(stores, backends):
     print(f"\n== DataLoader, shuffled, batch_size={BATCH} (samples per second)")
-    print(f"{'':27s}" + "".join(f"{w:>4d} workers" for w in (0, 4, 8)))
-    configs = [(c, b, r) for c in (1, 24, 168) for b in backends for r in (False, True)]
-    for chunk, backend, batched in configs:
-        read = "one read" if batched else "per sample"
-        row = f"chunk{chunk:<4d} {backend:5s} {read:10s}"
-        for workers in (0, 4, 8):
-            ds = open_store(stores / f"chunk{chunk}.zarr", backend)
-            dataset = build(ds, batched)
-            loader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=BATCH,
-                shuffle=True,
-                num_workers=workers,
-                multiprocessing_context="forkserver" if workers else None,
-                generator=torch.Generator().manual_seed(0),
-            )
-            n_batches = 8 if workers == 0 else 40
-            it = iter(loader)
-            next(it)  # worker start-up is not counted
-            start = time.perf_counter()
-            for _ in range(n_batches):
-                next(it)
-            row += f"{n_batches * BATCH / (time.perf_counter() - start):12.0f}"
-            del it, loader
-        print(row, flush=True)
-
-
-def batched_row(ds, rng):
-    """Times of four ways to read the history of BATCH random points, in ms."""
-    view = OffsetView(ds, ["t2m", "u10"], offsets={"time": HISTORY})
-    batches = [
-        [{"time": t} for t in ds.time.values[rng.integers(3, 8760, size=BATCH)]]
-        for _ in range(5)
-    ]
-
-    def per_sample(i):
-        return np.stack([view.fetch(p).to_array().values for p in batches[i]])
-
-    def positions(i):
-        return np.stack([view.select(p)["time"] for p in batches[i]])
-
-    def vectorized(i):
-        # one pointwise selection with a (batch, time) indexer
-        indexer = xr.DataArray(positions(i), dims=("batch", "time"))
-        out = view.ds.isel(time=indexer).to_array().values
-        return np.moveaxis(out, 1, 0)  # batch first
-
-    def unique_take(i):
-        # read every needed step once, sorted, then gather in memory
-        pos = positions(i)
-        steps, inverse = np.unique(pos, return_inverse=True)
-        block = view.ds.isel(time=steps).to_array().values  # var, step, ...
-        return np.moveaxis(block[:, inverse.reshape(pos.shape)], 1, 0)
-
-    def fetch_many(i):
-        return np.stack([d.to_array().values for d in view.fetch_many(batches[i])])
-
-    assert np.array_equal(per_sample(0), fetch_many(0))
-    assert np.array_equal(per_sample(0), vectorized(0))
-    assert np.array_equal(per_sample(0), unique_take(0))
-    fns = (per_sample, vectorized, unique_take, fetch_many)
-    return [timeit(fn, len(batches)) for fn in fns]
-
-
-def batched(stores, backends):
-    rng = np.random.default_rng(0)
-    print(f"\n== one read per batch instead of per sample ({BATCH} random points), ms")
-    names = ("per sample", "vectorized", "unique+take", "fetch_many")
-    print(f"{'':20s}" + "".join(f"{name:>12s}" for name in names))
+    print(f"{'':16s}" + "".join(f"{w:>4d} workers" for w in (0, 4, 8)))
     for chunk in (1, 24, 168):
         for backend in backends:
-            ds = open_store(stores / f"chunk{chunk}.zarr", backend)
-            times = "".join(f"{ms:12.1f}" for ms in batched_row(ds, rng))
-            print(f"chunk{chunk:<4d} {backend:9s}{times}", flush=True)
+            row = f"chunk{chunk:<4d} {backend:5s}"
+            for workers in (0, 4, 8):
+                dataset = build(open_store(stores / f"chunk{chunk}.zarr", backend))
+                loader = torch.utils.data.DataLoader(
+                    dataset,
+                    batch_size=BATCH,
+                    shuffle=True,
+                    num_workers=workers,
+                    multiprocessing_context="forkserver" if workers else None,
+                    generator=torch.Generator().manual_seed(0),
+                )
+                n_batches = 8 if workers == 0 else 40
+                it = iter(loader)
+                next(it)  # worker start-up is not counted
+                start = time.perf_counter()
+                for _ in range(n_batches):
+                    next(it)
+                row += f"{n_batches * BATCH / (time.perf_counter() - start):12.0f}"
+                del it, loader
+            print(row, flush=True)
 
 
 if __name__ == "__main__":
-    stores, backends = Path(sys.argv[1]), sys.argv[2].split(",")
-    loaders(stores, backends)
-    batched(stores, backends)
+    loaders(Path(sys.argv[1]), sys.argv[2].split(","))

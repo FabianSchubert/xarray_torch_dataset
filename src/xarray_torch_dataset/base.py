@@ -114,79 +114,14 @@ class View(ABC):
         selection; an override has to return loaded data as well.
         """
         indexers = self.select(point)
-        return self._take(self.ds, indexers, self._exists(indexers), point).load()
-
-    def fetch_many(self, points: Sequence[Point]) -> list[xr.Dataset]:
-        """What `fetch` gives for each of the points, from a single read.
-
-        Reads every position that some point needs once, into memory, and
-        takes each point's selection from that block. The results are the
-        same as from `fetch`.
-
-        Along several dimensions the block is the outer product of the
-        positions needed along each. If that is more data than the points
-        ask for (as for points that each need one scattered element), the
-        points are fetched one by one instead. The same holds for views
-        that override `fetch`.
-        """
-        if type(self).fetch is not View.fetch:
-            return [self.fetch(point) for point in points]
-        if not points:
-            return []
-        selections = [self.select(point) for point in points]
-        exists = [self._exists(indexers) for indexers in selections]
-
-        # Per dimension that every point selects along, the sorted positions
-        # that exist and are needed by some point. Other dimensions are read
-        # in full, as they would be for a single point.
-        shared = set(selections[0]).intersection(*selections[1:])
-        steps = {}
-        for dim in shared:
-            needed = [
-                np.asarray(indexers[dim])[e[dim]].ravel()
-                for indexers, e in zip(selections, exists, strict=True)
-                if indexers[dim] is not None
-            ]
-            steps[dim] = np.unique(np.concatenate(needed)) if needed else np.array([])
-            if not steps[dim].size:
-                # nothing exists along `dim`; `_fill` needs a stand-in to read
-                steps[dim] = np.array([0])
-
-        block_size = np.prod([len(s) for s in steps.values()])
-        requested = sum(np.prod([e[dim].sum() for dim in shared]) for e in exists)
-        if block_size > requested:
-            return [self.fetch(point) for point in points]
-        block = self.ds.isel(steps).load()
-
-        out = []
-        for point, indexers, e in zip(points, selections, exists, strict=True):
-            # the same selection, as positions in the block
-            in_block = {
-                dim: pos
-                if dim not in steps or pos is None
-                else np.searchsorted(steps[dim], np.where(e[dim], pos, steps[dim][0]))
-                for dim, pos in indexers.items()
-            }
-            out.append(self._take(block, in_block, e, point))
-        return out
-
-    def _take(
-        self,
-        source: xr.Dataset,
-        indexers: Indexers,
-        exists: Mapping[Hashable, np.ndarray],
-        point: Point,
-    ) -> xr.Dataset:
-        """Select from `source`, filling or raising if positions are missing.
-
-        `exists` says which positions are missing; where it is False the
-        entry of `indexers` is not used.
-        """
+        exists = self._exists(indexers)
         if self.unavailable == "fill":
-            return self._fill(source, indexers, exists)
-        if all(e.all() for e in exists.values()):
-            return source.isel(indexers)
-        raise IndexError(f"Selection for {point!r} leaves the source.")
+            out = self._fill(indexers, exists)
+        elif all(e.all() for e in exists.values()):
+            out = self.ds.isel(indexers)
+        else:
+            raise IndexError(f"Selection for {point!r} leaves the source.")
+        return out.load()
 
     def _exists(self, indexers: Indexers) -> dict[Hashable, np.ndarray]:
         """Per dimension, which of the positions lie inside the source.
@@ -210,10 +145,7 @@ class View(ABC):
         return exists
 
     def _fill(
-        self,
-        source: xr.Dataset,
-        indexers: Indexers,
-        exists: Mapping[Hashable, np.ndarray],
+        self, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
     ) -> xr.Dataset:
         """Read the selection, with NaN wherever a position is missing.
 
@@ -254,11 +186,11 @@ class View(ABC):
                 scalar = pos is None or np.ndim(pos) == 0
                 readable[dim] = 0 if scalar else np.zeros(np.shape(pos), dtype=int)
                 empty.add(dim)
-        out = source.isel(readable)
+        out = self.ds.isel(readable)
         # Variables along such a dimension are missing entirely, so they
         # are not read at all.
-        out = _blank(out, [n for n in out.data_vars if empty & set(source[n].dims)])
-        out = _as_float(out, [n for n, c in source.coords.items() if c.dims])
+        out = _blank(out, [n for n in out.data_vars if empty & set(self.ds[n].dims)])
+        out = _as_float(out, [n for n, c in self.ds.coords.items() if c.dims])
 
         # Step 2: blank out the stand-ins, one dimension at a time.
         for dim, present in exists.items():
@@ -272,7 +204,7 @@ class View(ABC):
             # scalar position removes `dim` from `out`. Everything else
             # is left alone: `where` on the whole dataset would give those
             # variables the dimension `dim` and blank them as well.
-            along_dim = [n for n, v in source.variables.items() if dim in v.dims]
+            along_dim = [n for n, v in self.ds.variables.items() if dim in v.dims]
             # `where` keeps values where the mask is True and puts NaN
             # elsewhere. The coordinates are masked too; otherwise a
             # missing entry would carry the label of the stand-in.
@@ -328,12 +260,6 @@ class XrDataset(Dataset):
     ``validate=False`` skips that check, which takes time on many points.
     Every point is then kept, `n_rejected` is ``None``, and a point that a
     view would have rejected raises an ``IndexError`` when it is fetched.
-
-    ``batched=True`` is experimental. A DataLoader that batches then asks
-    for a whole batch at once, which costs one read per view instead of one
-    per sample (see `View.fetch_many`). On chunked stores that can be
-    faster, mostly with few workers. One point that cannot be fetched then
-    fails its whole batch.
     """
 
     def __init__(
@@ -343,12 +269,10 @@ class XrDataset(Dataset):
         transform: Callable | None = None,
         rejected: Literal["drop", "raise"] = "drop",
         validate: bool = True,
-        batched: bool = False,
     ):
         self.points = points
         self.views = views
         self.transform = transform
-        self.batched = batched
         if not len(points):
             raise ValueError("There are no points.")
         # positions in `points` of the points the dataset serves
@@ -391,22 +315,3 @@ class XrDataset(Dataset):
         point = self.points[int(self.indices[idx])]
         sample = {name: view.fetch(point) for name, view in self.views.items()}
         return self.transform(sample) if self.transform else sample
-
-    @property
-    def __getitems__(self):
-        """What torch's DataLoader calls with all indices of a batch, if set.
-
-        ``None`` unless ``batched=True``, so that by default a DataLoader
-        asks for one sample at a time through ``__getitem__``.
-        """
-        return self._getitems if self.batched else None
-
-    def _getitems(self, indices):
-        """The samples at `indices`, as a list, from one read per view."""
-        points = [self.points[int(self.indices[idx])] for idx in indices]
-        fetched = {name: view.fetch_many(points) for name, view in self.views.items()}
-        samples = [
-            {name: data[k] for name, data in fetched.items()}
-            for k in range(len(points))
-        ]
-        return [self.transform(s) for s in samples] if self.transform else samples

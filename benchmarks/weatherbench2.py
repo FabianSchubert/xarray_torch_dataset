@@ -59,7 +59,7 @@ def open_store(source, name):
     )
 
 
-def build(source, batched=False, validate=True):
+def build(source, validate=True):
     hres = open_store(source, "hres.zarr").rename(
         time="init_time", prediction_timedelta="lead_time"
     )
@@ -78,7 +78,6 @@ def build(source, batched=False, validate=True):
         PointGrid(init_time=init_times.astype("datetime64[ns]"), lead_time=lead_times),
         views,
         transform=ToTensors(),
-        batched=batched,
         validate=validate,
     )
 
@@ -137,13 +136,12 @@ if __name__ == "__main__":
     print(f"{(time.perf_counter() - start) / len(picks) * 1e3:.1f}")
 
     print(f"\n== DataLoader, shuffled, batch_size={BATCH} (samples per second)")
-    print(f"{'':12s}" + "".join(f"{w:>4d} workers" for w in (0, 4, 8)))
-    for batched in (False, True):
-        row = f"{'one read' if batched else 'per sample':12s}"
-        for workers in (0, 4, 8):
-            # reuse the validation from above to save start-up time
-            dataset = build(source, batched=batched, validate=False)
-            dataset.indices = indices
-            prepare()
-            row += f"{throughput(dataset, workers, seconds=20):12.0f}"
-        print(row, flush=True)
+    print("".join(f"{w:>4d} workers" for w in (0, 4, 8)))
+    row = ""
+    for workers in (0, 4, 8):
+        # reuse the validation from above to save start-up time
+        dataset = build(source, validate=False)
+        dataset.indices = indices
+        prepare()
+        row += f"{throughput(dataset, workers, seconds=20):12.0f}"
+    print(row, flush=True)

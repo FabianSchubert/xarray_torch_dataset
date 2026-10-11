@@ -74,15 +74,13 @@ def test_without_validation_every_point_is_kept_and_fails_when_fetched(source, t
             raise AssertionError("accepts must not be called")
 
     views = {"x": NeverAsked(source, ["a"], offsets={"time": [-2 * DAY, 0 * DAY]})}
-    dataset = XrDataset(PointGrid(time=times), views, validate=False, batched=True)
+    dataset = XrDataset(PointGrid(time=times), views, validate=False)
 
     assert len(dataset) == len(times)
     assert dataset.n_rejected is None
     xr.testing.assert_identical(dataset[2]["x"], source[["a"]].isel(time=[0, 2]))
     with pytest.raises(IndexError, match="leaves the source"):
         dataset[0]
-    with pytest.raises(IndexError, match="leaves the source"):
-        dataset.__getitems__([5, 1])
 
 
 def test_filling_view_never_drops_a_point(source, times):
@@ -121,51 +119,3 @@ def test_batches_through_a_dataloader(source, times):
 
     assert batch["x"].shape == (5, 1, 3, 4)  # batch, variable, time, lat
     np.testing.assert_array_equal(batch["x"][1, 0], source.a.values[1:4])
-
-
-def test_a_batch_of_samples_equals_the_single_samples(source, times):
-    views = {
-        "x": history(source, unavailable="fill"),
-        "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),
-    }
-    dataset = XrDataset(PointGrid(time=times), views, batched=True)
-    indices = [0, 1, 7, 29, 7]
-
-    batch = dataset.__getitems__(indices)
-    assert len(batch) == len(indices)
-    for sample, i in zip(batch, indices, strict=True):
-        assert set(sample) == {"x", "y"}
-        for name in sample:
-            xr.testing.assert_identical(sample[name], dataset[i][name])
-
-
-def test_a_batch_goes_through_the_transform(source, times):
-    dataset = XrDataset(
-        PointGrid(time=times),
-        {"x": history(source)},
-        transform=ToTensors(),
-        batched=True,
-    )
-    batch = dataset.__getitems__([3, 4])
-    assert all(
-        torch.equal(batch[k]["x"], dataset[i]["x"]) for k, i in enumerate([3, 4])
-    )
-
-
-@pytest.mark.parametrize("batched", [False, True])
-def test_a_dataloader_reads_batches_at_once_only_if_asked(source, times, batched):
-    class Counting(OffsetView):
-        batches = 0
-
-        def fetch_many(self, points):
-            type(self).batches += 1
-            return super().fetch_many(points)
-
-    view = Counting(source, ["a"], offsets={"time": [-DAY, 0 * DAY]})
-    dataset = XrDataset(
-        PointGrid(time=times), {"x": view}, transform=ToTensors(), batched=batched
-    )
-    batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=5)))
-
-    np.testing.assert_array_equal(batch["x"][0, 0], source.a.values[0:2])
-    assert Counting.batches == (1 if batched else 0)
