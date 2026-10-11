@@ -205,7 +205,9 @@ class View(ABC):
 
         The result has the shape a complete selection would have. Along a
         dimension with missing positions, the coordinates of those entries
-        are masked as well (NaN or NaT).
+        are masked as well (NaN or NaT). A variable is only missing along
+        dimensions it has: one without ``time`` is returned as it is,
+        whatever is missing along ``time``.
 
         Integer and boolean values cannot hold NaN, so they are returned as
         floats. That holds for a complete selection too, so that the dtype
@@ -224,7 +226,7 @@ class View(ABC):
         # missing positions hold the data of the stand-in. The stand-in is
         # a position that is read anyway, so it costs no extra I/O.
         readable = {}
-        nothing_to_read = False
+        empty = set()  # dimensions along which nothing exists
         for dim, pos in indexers.items():
             present = exists[dim]
             if present.all():
@@ -233,42 +235,47 @@ class View(ABC):
                 stand_in = np.asarray(pos)[present].flat[0]
                 readable[dim] = np.where(present, pos, stand_in)
             else:
-                # Nothing exists along `dim`, so the whole sample is
-                # missing. Position 0 only gives the selection its shape.
+                # Nothing exists along `dim`. Position 0 only gives the
+                # selection its shape.
                 scalar = pos is None or np.ndim(pos) == 0
                 readable[dim] = 0 if scalar else np.zeros(np.shape(pos), dtype=int)
-                nothing_to_read = True
+                empty.add(dim)
         out = source.isel(readable)
-        if nothing_to_read:
-            out = _blank(out)
+        # Variables along such a dimension are missing entirely, so they
+        # are not read at all.
+        out = _blank(out, [n for n in out.data_vars if empty & set(source[n].dims)])
         out = _as_float(out, [n for n, c in source.coords.items() if c.dims])
 
         # Step 2: blank out the stand-ins, one dimension at a time.
         for dim, present in exists.items():
             if present.all():
                 continue
-            # A mask along `dim` only, which `where` broadcasts over all
-            # other dimensions. For a scalar position `present` is 0-d, so
-            # the mask has no dimension and blanks the whole sample.
+            # A mask along `dim` only, which `where` broadcasts over a
+            # variable's other dimensions. For a scalar position `present`
+            # is 0-d, so the mask has no dimension and blanks all of it.
             mask = xr.DataArray(present, dims=[dim] * present.ndim)
+            # What lies along `dim` is taken from the source, since a
+            # scalar position removes `dim` from `out`. Everything else
+            # is left alone: `where` on the whole dataset would give those
+            # variables the dimension `dim` and blank them as well.
+            along_dim = [n for n, v in source.variables.items() if dim in v.dims]
             # `where` keeps values where the mask is True and puts NaN
-            # elsewhere, but only in data variables...
-            out = out.where(mask)
-            # ...so the coordinates along `dim` (taken from the source,
-            # since a scalar position removes `dim` from `out`) are masked
-            # separately. Otherwise a missing entry would carry the label
-            # of the stand-in.
-            along_dim = [n for n, c in source.coords.items() if dim in c.dims]
+            # elsewhere. The coordinates are masked too; otherwise a
+            # missing entry would carry the label of the stand-in.
+            out = out.assign(
+                {n: out[n].where(mask) for n in along_dim if n in out.data_vars}
+            )
             out = out.assign_coords(
-                {name: out[name].where(mask).variable for name in along_dim}
+                {n: out[n].where(mask).variable for n in along_dim if n in out.coords}
             )
         return out
 
 
-def _blank(ds: xr.Dataset) -> xr.Dataset:
-    """`ds` with its data variables replaced by NaN (or NaT), unread."""
+def _blank(ds: xr.Dataset, names: Sequence[Hashable]) -> xr.Dataset:
+    """`ds` with the data variables `names` replaced by NaN (or NaT), unread."""
     blank = {}
-    for name, var in ds.data_vars.items():
+    for name in names:
+        var = ds[name]
         if var.dtype.kind in "iubf":
             values = np.full(var.shape, np.nan)
             if var.dtype.kind == "f":
@@ -278,7 +285,7 @@ def _blank(ds: xr.Dataset) -> xr.Dataset:
         else:
             continue  # left to be read and masked
         blank[name] = (var.dims, values, var.attrs)
-    return ds.assign(blank)
+    return ds.assign(blank) if blank else ds
 
 
 def _as_float(ds: xr.Dataset, coords: Sequence[Hashable]) -> xr.Dataset:

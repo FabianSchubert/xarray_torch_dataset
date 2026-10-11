@@ -156,6 +156,18 @@ def test_fill_returns_floats_whether_or_not_something_is_missing(source):
     assert Positions(source).fetch(at(time=[0, 1]))["count"].dtype.kind == "i"
 
 
+@pytest.mark.parametrize("positions", [[3, 4], [3, 4, 31], [31, 32], None, 31])
+def test_fill_leaves_variables_without_the_dimension_alone(source, positions):
+    with_static = source.assign(static=("lat", [100.0, 200.0, 300.0, 400.0]))
+    out = Positions(with_static, unavailable="fill").fetch(at(time=positions))
+
+    assert out.static.dims == ("lat",)
+    np.testing.assert_array_equal(out.static.values, with_static.static.values)
+    # what does lie along time is still filled
+    expected = np.isin(np.atleast_1d(positions), [None, 31, 32])
+    np.testing.assert_array_equal(np.atleast_1d(out["count"].isnull()), expected)
+
+
 @pytest.fixture
 def recording(source):
     """`source` as dask arrays, one chunk per step, and the steps that get read."""
@@ -194,6 +206,17 @@ def test_fill_reads_nothing_if_nothing_exists(recording, positions):
     assert out.a.isnull().all() and out["count"].isnull().all()
     assert out.a.shape == np.shape(positions or 0) + (4,)
     assert read == []
+
+
+def test_fill_still_reads_variables_that_are_not_missing(source, recording):
+    lazy, read = recording
+    static = source.a.isel(time=0, drop=True).rename("static")
+    out = Positions(lazy.assign(static=static.chunk()), unavailable="fill").fetch(
+        at(time=[31, 32])
+    )
+
+    np.testing.assert_array_equal(out.static.values, static.values)
+    assert out.a.isnull().all() and read == []
 
 
 # -- fetch_many -----------------------------------------------------------
