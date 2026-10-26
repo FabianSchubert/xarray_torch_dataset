@@ -86,7 +86,7 @@ print({name: tensor.shape for name, tensor in batch.items()})
 
 ## The parts
 
-**Points.** Anything with `__len__` and `__getitem__(i)` that returns a point will do, including a plain list of dicts. `PointGrid(time=times, lat=lats)` gives every combination of the labels without building the list.
+**Points.** Anything with `__len__` and `__getitem__(i)` that returns a point will do, including a plain list of dicts. `PointGrid(time=times, lat=lats)` gives every combination of the labels without building the list. `PointTable(time=times, lat=lats)` gives the rows of label arrays of equal length, for any other set of points, such as the points of a grid that pass a filter.
 
 **Views.** A view is usually written for the application at hand (see below). Two are included, as examples and for the common cases:
 
@@ -165,6 +165,75 @@ class DayBeforeView(View):
     def select(self, point):
         return {"time": self.locate("time", self.labels(point)["time"])}
 ```
+
+## Caching samples
+
+Reading and reducing the sources can take much longer than training on the result. A cache stores the expensive part once. For that, the transform is split in two stages:
+
+- `prepare` does the expensive part and returns one `xr.Dataset` per sample, the **prepared sample**: for example the mean and spread over the members of an ensemble.
+- `finish` turns a prepared sample into what the model gets: for example tensors, or a lead time shifted for an experiment.
+
+`write_cache` writes the prepared sample of every point of a dataset whose transform is `prepare`. A `CacheView` reads them back, one row per point, so that a dataset on the cache has the same samples as one on the sources:
+
+```mermaid
+flowchart LR
+    subgraph raw["from the sources"]
+        views["views<br/>{name: xr.Dataset}"] --> prepare["prepare<br/>the expensive part"]
+    end
+    prepare -- "prepared sample: xr.Dataset" --> finish["finish<br/>the cheap part"]
+    prepare -. "write_cache" .-> store[("cache store<br/>one row per point")]
+    store -- "CacheView: the row of a point" --> finish
+    finish --> sample["sample"]
+```
+
+```python
+import numpy as np
+import torch
+import xarray as xr
+
+from xarray_torch_dataset import CacheView, OffsetView, PointGrid, XrDataset, write_cache
+
+times = np.arange("2020-01-01", "2020-02-01", dtype="datetime64[D]")
+members = xr.Dataset(
+    {"t2m": (("time", "member", "lat", "lon"), np.random.rand(31, 10, 8, 8))},
+    coords={"time": times},
+)
+
+
+def prepare(data):
+    """The expensive part: the mean and spread over the members."""
+    t2m = data["x"].t2m
+    return xr.Dataset({"mean": t2m.mean("member"), "std": t2m.std("member")}).drop_vars(
+        "time"
+    )
+
+
+def finish(prepared):
+    """The cheap part: the tensor the model gets."""
+    return torch.from_numpy(
+        np.stack([prepared["mean"].values, prepared["std"].values])
+    ).float()
+
+
+views = {"x": OffsetView(members, ["t2m"])}
+write_cache(XrDataset(PointGrid(time=times), views, transform=prepare), "t2m.zarr")
+
+cache = CacheView("t2m.zarr")
+cached = XrDataset(cache.points, {"cache": cache}, transform=lambda d: finish(d["cache"]))
+raw = XrDataset(PointGrid(time=times), views, transform=lambda d: finish(prepare(d)))
+assert all(torch.equal(raw[i], cached[i]) for i in range(len(raw)))
+```
+
+What a prepared sample may hold:
+
+- **Data variables** are what differs between samples. Each becomes an array of the store with a leading `sample` dimension. They must have the same names, dimensions, shapes and dtypes in every sample.
+- **Coordinates** are stored once and must be the same in every sample, so `write_cache` raises otherwise. Labels that differ between samples, such as the time a view fetched, have to be dropped or become data variables; the example drops `time`.
+
+The store is a zarr 3 store that xarray and plain zarr can read. Large variables get one chunk per sample and several samples per file (a shard, about 1 GB by default), small ones such as times are one chunk. The labels of the points are stored too, one array per dimension of the points, and `attrs` given to `write_cache` become the attributes of the store, for example the settings it was written with, to check before using it (`CacheView(path).attrs`).
+
+`CacheView(path).points` are all points of the cache, in their order. A dataset on part of the cache gives those points instead; a point the cache does not hold is rejected, or raises with `rejected="raise"`. The fetched row has the point's labels as coordinates.
+
+`write_cache(..., num_workers=4, multiprocessing_context="forkserver")` reads with DataLoader workers. Start them with `forkserver` rather than by forking, as zarr runs threads that a forked worker may deadlock on; the views and the transform then have to be importable from a module.
 
 ## Reading from zarr
 

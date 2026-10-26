@@ -28,3 +28,28 @@ class PointGrid:
             dim: labels[pos]
             for (dim, labels), pos in zip(self.coords.items(), positions, strict=True)
         }
+
+
+class PointTable:
+    """Points as the rows of label arrays of equal length.
+
+    ``PointTable(time=times, lat=lats)`` has ``len(times)`` points, the i-th
+    being ``{"time": times[i], "lat": lats[i]}``. Unlike `PointGrid`, it can
+    hold any combinations of labels, such as the points of a grid that pass
+    a filter, while still storing only the arrays.
+    """
+
+    def __init__(self, **columns: ArrayLike):
+        self.columns = {dim: np.asarray(labels) for dim, labels in columns.items()}
+        lengths = {dim: len(labels) for dim, labels in self.columns.items()}
+        if len(set(lengths.values())) > 1:
+            raise ValueError(f"The label arrays differ in length: {lengths}.")
+        self._len = next(iter(lengths.values()), 0)
+
+    def __len__(self) -> int:
+        return self._len
+
+    def __getitem__(self, i: int, /) -> Point:
+        if not 0 <= i < len(self):
+            raise IndexError(i)
+        return {dim: labels[i] for dim, labels in self.columns.items()}
