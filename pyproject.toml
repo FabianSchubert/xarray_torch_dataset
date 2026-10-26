@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=2.1",
     "torch>=2.9",
     "xarray>=2025.7.0",
+    "zarr>=3.1.0",
 ]
 
 [build-system]
@@ -22,7 +23,6 @@ dev = [
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
-    "zarr>=3.4.1",
 ]
 
 [tool.ruff.lint]
