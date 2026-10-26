@@ -8,10 +8,25 @@ This is an experiment. The interfaces are still changing; `STATUS.md` records th
 
 A sample is described in three steps:
 
-```
-index --points--> point (a dict of coordinate labels)
-point --View----> data from one xarray source   (one View per source)
-{name: data} --transform--> returned sample
+```mermaid
+flowchart LR
+    loader["DataLoader"] -- "index i" --> point
+    points["Points<br/>PointGrid or list of dicts"] -- "points[indices[i]]" --> point
+
+    subgraph dataset["XrDataset[i]"]
+        point["point<br/>{dim: label}"]
+        subgraph view["View, one per source"]
+            select["select(point)<br/>positions, no reading"]
+            fetch["fetch(point)<br/>reads, or fills with NaN"]
+        end
+        transform["transform<br/>e.g. ToTensors"]
+    end
+
+    source[("xarray source<br/>e.g. a zarr store")]
+    point --> select --> fetch
+    source --> fetch
+    fetch -- "{view name: xr.Dataset}" --> transform
+    transform -- "sample" --> loader
 ```
 
 - A **point** says where a sample is, as coordinate labels: `{"time": np.datetime64("2020-01-05")}`.
@@ -19,6 +34,14 @@ point --View----> data from one xarray source   (one View per source)
 - A **transform** turns the fetched xarray data into what the model needs, usually tensors.
 
 Views only compute positions; they do not read. The dataset can therefore check at construction which points every view can serve, and it keeps only those.
+
+```mermaid
+flowchart LR
+    points["Points"] --> accepts{"every view<br/>accepts(point)?"}
+    accepts -- "yes" --> indices["indices: the samples"]
+    accepts -- "no" --> rejected["dropped, or an error<br/>with rejected=&quot;raise&quot;"]
+    indices --> collect["labels(name), available(name)<br/>per sample, without reading"]
+```
 
 ## Example
 
