@@ -13,6 +13,7 @@ that every view can serve.
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import numpy as np
@@ -366,6 +367,12 @@ class XrDataset(Dataset):
     needs a transform that returns tensors or arrays, such as `ToTensors`,
     because torch cannot batch xarray objects.
 
+    The transform can come in two stages: `prepare` does the expensive part
+    and returns one ``xr.Dataset`` per sample, the prepared sample, and
+    `transform` turns that into the sample. `cache` stores the prepared
+    samples, and `from_cache` reads them back, so that the same `transform`
+    serves both.
+
     Points that some view rejects are dropped at construction, or
     reported if ``rejected="raise"``. `n_rejected` says how many points
     each view rejected; a point counts for the first view that rejected it.
@@ -380,12 +387,14 @@ class XrDataset(Dataset):
         points: Points,
         views: Mapping[str, View],
         transform: Callable | None = None,
+        prepare: Callable[[dict[str, xr.Dataset]], xr.Dataset] | None = None,
         rejected: Literal["drop", "raise"] = "drop",
         validate: bool = True,
     ):
         self.points = points
         self.views = views
         self.transform = transform
+        self.prepare = prepare
         if not len(points):
             raise ValueError("There are no points.")
         # positions in `points` of the points the dataset serves
@@ -448,5 +457,46 @@ class XrDataset(Dataset):
 
     def __getitem__(self, idx):
         point = self.points[int(self.indices[idx])]
-        sample = {name: view.fetch(point) for name, view in self.views.items()}
+        data = {name: view.fetch(point) for name, view in self.views.items()}
+        sample = self.prepare(data) if self.prepare else data
         return self.transform(sample) if self.transform else sample
+
+    def cache(self, path: str | Path, **options: Any) -> None:
+        """Write the prepared sample of every point to a zarr store at `path`.
+
+        See `xarray_torch_dataset.cache.write_cache` for the layout of the
+        store and the `options`. Needs `prepare`.
+        """
+        from xarray_torch_dataset.cache import write_cache
+
+        write_cache(self, path, **options)
+
+    @classmethod
+    def from_cache(
+        cls,
+        path: str | Path,
+        transform: Callable | None = None,
+        points: Points | None = None,
+        rejected: Literal["drop", "raise"] = "drop",
+    ) -> "XrDataset":
+        """A dataset of the prepared samples that `cache` wrote to `path`.
+
+        Its samples are ``transform(prepared sample)``, so the `transform` of
+        the dataset that was cached gives the same samples. `points` reads
+        part of the cache, by default all of it; a point the cache lacks is
+        rejected as by any view. The result is an `XrDataset`, also when
+        called on a subclass, whose constructor needs sources that a cached
+        dataset does not have.
+        """
+        from xarray_torch_dataset.cache import CachedRow, CacheView
+
+        view = CacheView(path)
+        return XrDataset(
+            view.points if points is None else points,
+            {"cache": view},
+            transform=transform,
+            prepare=CachedRow(view.point_dims),
+            rejected=rejected,
+            # the points of the cache are all in it
+            validate=points is not None,
+        )

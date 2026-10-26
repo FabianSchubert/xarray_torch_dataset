@@ -1,18 +1,16 @@
 """Caching prepared samples in a zarr store, and reading them back as a view.
 
-A transform can be split in two stages: ``prepare``, which does the
-expensive part and returns one ``xr.Dataset`` per sample, and ``finish``,
-which turns that into the sample. `write_cache` writes the prepared sample
-of every point of a dataset whose transform is ``prepare``; `CacheView`
-serves those rows again, so that::
+A dataset with ``prepare`` serves ``transform(prepare(data))``.
+`XrDataset.cache` writes ``prepare(data)`` of every point with `write_cache`,
+and `XrDataset.from_cache` reads them back through a `CacheView`, so that::
 
-    XrDataset(points, views, transform=lambda data: finish(prepare(data)))
-    XrDataset(points, {"cache": CacheView(path)}, transform=finish_row)
+    XrDataset(points, views, transform=finish, prepare=prepare)
+    XrDataset.from_cache(path, transform=finish)
 
-give the same samples, where ``finish_row(data)`` is
-``finish(data["cache"])``.
+give the same samples.
 """
 
+import copy
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -51,15 +49,16 @@ def write_cache(
     multiprocessing_context: str | None = None,
     overwrite: bool = False,
 ) -> None:
-    """Write the sample of every point of `dataset` to a zarr store at `path`.
+    """Write the prepared sample of every point of `dataset` to `path`.
 
-    The transform of `dataset` returns an ``xr.Dataset`` per sample, the
-    prepared sample, whose variables have the same names, dimensions, shapes
-    and dtypes for every sample. Each data variable becomes an array with a
-    leading ``sample`` dimension, in the order of the samples. Coordinates
-    are written once, and must be the same for every sample; something that
-    differs between samples is a data variable. The labels of the points
-    are written as one array per dimension of the points, along ``sample``.
+    `XrDataset.cache` calls this. The `prepare` of `dataset` returns an
+    ``xr.Dataset`` per sample, the prepared sample, whose variables have the
+    same names, dimensions, shapes and dtypes for every sample. Each data
+    variable becomes an array with a leading ``sample`` dimension, in the
+    order of the samples. Coordinates are written once, and must be the same
+    for every sample; something that differs between samples is a data
+    variable. The labels of the points are written as one array per
+    dimension of the points, along ``sample``.
     `attrs` become the attributes of the store.
 
     Variables of at most `SMALL_SAMPLE_BYTES` per sample are stored as one
@@ -72,9 +71,17 @@ def write_cache(
     can be pickled and imported. An existing store at `path` raises a
     ``FileExistsError`` unless `overwrite` is set.
     """
+    if dataset.prepare is None:
+        raise ValueError(
+            "Only a dataset with `prepare` can be cached: what prepare returns "
+            "is what the cache stores."
+        )
     path = Path(path)
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} exists.")
+    # the same dataset, serving the prepared samples
+    dataset = copy.copy(dataset)
+    dataset.transform = None
     template = _prepared(dataset[0])
     point_dims = _point_dims(dataset)
     names = [*template.data_vars, *template.coords, *point_dims]
@@ -197,12 +204,30 @@ class CacheView(View):
         return {SAMPLE_DIM: self._rows.get(key)}
 
 
+class CachedRow:
+    """The prepared sample in the row of a point: the row without its labels.
+
+    The `prepare` of a dataset that `XrDataset.from_cache` reads. A class
+    rather than a function, so that the workers of a DataLoader can receive
+    it.
+    """
+
+    def __init__(self, point_dims: Sequence[str]):
+        self.point_dims = list(point_dims)
+
+    def __call__(self, data: dict[str, xr.Dataset]) -> xr.Dataset:
+        row = data["cache"].drop_vars(self.point_dims)
+        # the attributes of the store belong to the store, see CacheView.attrs
+        row.attrs = {}
+        return row
+
+
 def _prepared(sample: Any) -> xr.Dataset:
     """The prepared sample, checked to be an ``xr.Dataset``."""
     if not isinstance(sample, xr.Dataset):
         raise TypeError(
-            "write_cache needs a dataset whose transform returns an xr.Dataset "
-            f"per sample, not a {type(sample).__name__}."
+            "A cache needs a dataset whose prepare returns an xr.Dataset per "
+            f"sample, not a {type(sample).__name__}."
         )
     return sample
 
