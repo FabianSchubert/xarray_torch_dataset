@@ -45,7 +45,7 @@ The `examples/` folder has two scripts on random in-memory data. `examples/forec
 
 Other facts:
 
-- **Dependencies**: `numpy`, `torch`, `xarray`. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, and `zarr`, `dask` and `gcsfs` for the benchmarks. The package itself imports neither.
+- **Dependencies**: `numpy >= 2.1`, `torch >= 2.9`, `xarray >= 2025.7.0`. The package uses only long-established parts of them; the floors are the versions the test suite was last run against at its lowest (`uv pip install --resolution lowest-direct`, under Python 3.12 and 3.13), and they leave room for the pins of projects that use the package. Dev dependencies: `ruff`, `mypy`, `pre-commit`, `pytest`, `dask` for some of the tests and the benchmarks, and `zarr` and `gcsfs` for the benchmarks. The package itself imports neither `dask`, `zarr` nor `gcsfs`.
 - **Tooling**: pre-commit runs `ruff check --fix`, `ruff format`, `mypy` and `pytest` as local hooks through `uv run`, so tool versions come from `uv.lock`. Ruff lint rules are `E`, `F`, `I`, `UP`, `B`. mypy checks `src` only, with `check_untyped_defs` and `warn_unused_ignores` but not `strict`.
 - **Tests**: a small pytest suite in `tests/` covers the package: the `View` contract (`locate`, accepting and rejecting, fetching, filling), the two included views, `ToTensors`, `PointGrid` and `XrDataset`. Run it with `uv run pytest`. It uses small in-memory data only and runs as a pre-commit hook.
 - **`README.md`** introduces the parts with a runnable example, shows how to write a view and says how to open zarr stores.
