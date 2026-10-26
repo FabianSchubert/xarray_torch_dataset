@@ -95,6 +95,25 @@ print({name: tensor.shape for name, tensor in batch.items()})
 | `OffsetView` | Fixed offsets from the point's labels, such as the last four hours. Offsets are added to the label and looked up in the source, so along time they are durations, not numbers of steps. Dimensions without offsets are selected at exactly the point's label. |
 | `FindLatestForecastView` | From a forecast source with `init_time` and `lead_time`, the most recent forecast for the point's valid time. This aligns, say, a 3-hourly forecast with hourly points. |
 
+**What a view does for a point.** The dataset calls `view.fetch(point)`, which runs as below. One question decides everything: does every position that `select` returned lie inside the source? If so, the view reads there. If not, its `unavailable` setting decides: `"reject"` raises, which the dataset avoids by dropping such points at construction, and `"fill"` reads what exists and fills the rest. A view's author writes `select`, and `labels` only to report what the view asked for where the source lacks it; the base class does the rest.
+
+```mermaid
+flowchart TD
+    fetch(["view.fetch(point)"]) --> select["positions = select(point)<br/>the view's own logic, reads nothing"]
+    select --> complete{"every position<br/>inside the source?"}
+    complete -- "yes" --> read["read at the positions"]
+    complete -- "no" --> unavailable{"unavailable="}
+    unavailable -- "&quot;reject&quot;" --> error["IndexError"]
+    unavailable -- "&quot;fill&quot;" --> fill["read only the positions that exist;<br/>missing entries get NaN as data<br/>and labels(point) as coordinates"]
+    read --> loaded(["loaded xr.Dataset"])
+    fill --> loaded
+
+    missing["missing: None, -1,<br/>or past the end"] -.- complete
+    available["available(point)<br/>asks this question"] -.- complete
+    accepts["accepts(point): always with &quot;fill&quot;,<br/>else available(point); the dataset<br/>drops points it rejects, so a validated<br/>dataset never reaches the IndexError"] -.- error
+    labels["labels(point): NaT or NaN by default,<br/>what the view asked for if it<br/>overrides labels"] -.- fill
+```
+
 **Unavailable data.** A source may not have everything a point asks for: a history window can reach back before the source starts, or the source may lack the point's label. What happens then is decided in two places.
 
 - Each view takes `unavailable="reject"` (the default) or `unavailable="fill"`. With `"reject"`, the view rejects such a point. With `"fill"`, it accepts every point and returns NaN for whatever the source lacks, in the shape a complete selection would have. `view.accepts(point)` gives this answer; the dataset asks it of every view for every point at construction, to decide which points to keep. Override it only for a cheaper check.
