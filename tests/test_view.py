@@ -237,3 +237,110 @@ def test_fill_still_reads_variables_that_are_not_missing(source, recording):
 
     np.testing.assert_array_equal(out.static.values, static.values)
     assert out.a.isnull().all() and read == []
+
+
+# -- labels and available ---------------------------------------------------
+
+
+def test_labels_are_those_of_the_selected_positions(source, times):
+    view = Positions(source)
+    assert view.labels(at(time=4)) == {"time": times[4]}
+    np.testing.assert_array_equal(view.labels(at(time=[5, 2]))["time"], times[[5, 2]])
+
+
+def test_labels_leave_out_dimensions_without_an_index(source, times):
+    assert set(Positions(source).labels(at(time=4, lat=[0, 1]))) == {"time"}
+
+
+@pytest.mark.parametrize("position", [None, 31])
+def test_label_of_a_missing_position_is_missing(source, position):
+    assert np.isnat(Positions(source).labels(at(time=position))["time"])
+
+
+def test_labels_of_missing_entries_are_missing(source, times):
+    labels = Positions(source).labels(at(time=[-1, 0, 31]))["time"]
+    nat = np.datetime64("NaT", "D")
+    np.testing.assert_array_equal(labels, np.array([nat, times[0], nat]))
+    assert labels.dtype == source.time.dtype
+
+
+@pytest.fixture
+def levels():
+    """A source with an integer index."""
+    return xr.Dataset(
+        {"t": (("level",), np.arange(3.0))}, coords={"level": [1000, 850, 500]}
+    )
+
+
+def test_integer_labels_become_floats_where_one_is_missing(levels):
+    view = Positions(levels)
+    assert view.labels(at(level=[0, 2]))["level"].dtype.kind == "i"
+    np.testing.assert_array_equal(
+        view.labels(at(level=[0, -1]))["level"], [1000.0, np.nan]
+    )
+    assert np.isnan(view.labels(at(level=None))["level"])
+
+
+def test_integer_labels_are_always_floats_when_filling(levels):
+    labels = Positions(levels, unavailable="fill").labels(at(level=[0, 2]))
+    assert labels["level"].dtype == float
+
+
+@pytest.mark.parametrize("positions", [3, None, 31, [0, 1], [-1, 0, 31], [31, 32]])
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_fill_puts_the_labels_on_the_coordinates(source, positions, unavailable):
+    view = Positions(source, unavailable=unavailable)
+    point = at(time=positions)
+    labels = view.labels(point)["time"]
+    if unavailable == "reject" and not view.available(point):
+        return  # a rejecting view cannot fetch it
+    np.testing.assert_array_equal(view.fetch(point).time.values, labels)
+
+
+class Wanted(Positions):
+    """`Positions` that knows the labels it asks for, e.g. from a table."""
+
+    def labels(self, point):
+        return dict(point["wanted"])
+
+
+def test_fill_puts_the_labels_of_an_override_on_missing_entries(source, times):
+    wanted = np.array(["2019-12-31", "2020-01-01", "2020-02-01"], dtype="datetime64[D]")
+    view = Wanted(source, unavailable="fill")
+    out = view.fetch({"positions": {"time": [-1, 0, 31]}, "wanted": {"time": wanted}})
+
+    # in the dtype of the coordinate, whatever the dtype of the labels
+    assert out.time.dtype == source.time.dtype
+    np.testing.assert_array_equal(out.time.values, wanted)
+    assert np.isnan(out.a.values[[0, 2]]).all()
+    # other coordinates along the dimension are still masked
+    np.testing.assert_array_equal(out.day_of_year.values, [np.nan, 1, np.nan])
+
+
+def test_fill_puts_a_scalar_label_of_an_override_on_a_missing_sample(source):
+    wanted = np.datetime64("2021-06-01")
+    view = Wanted(source, unavailable="fill")
+    out = view.fetch({"positions": {"time": None}, "wanted": {"time": wanted}})
+
+    assert out.time.values == wanted
+    assert out.a.isnull().all()
+
+
+def test_complete_selections_are_not_relabelled(source, times):
+    view = Wanted(source, unavailable="fill")
+    point = {"positions": {"time": [0, 1]}, "wanted": {"time": times[[5, 6]]}}
+    np.testing.assert_array_equal(view.fetch(point).time.values, times[[0, 1]])
+
+
+@pytest.mark.parametrize(
+    ("positions", "available"),
+    [(0, True), ([0, 30], True), (None, False), (31, False), ([0, -1], False)],
+)
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_available_tells_whether_something_is_missing(
+    source, positions, available, unavailable
+):
+    view = Positions(source, unavailable=unavailable)
+    assert view.available(at(time=positions)) is available
+    # a filling view accepts the point all the same
+    assert view.accepts(at(time=positions)) is (available or unavailable == "fill")

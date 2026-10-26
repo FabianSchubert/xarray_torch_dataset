@@ -22,7 +22,8 @@ class OffsetView(View):
     the source, so along time they are durations, not numbers of steps. A
     label the source lacks is unavailable, also inside a window: the view
     rejects the point, or fills that entry with NaN if
-    ``unavailable="fill"``.
+    ``unavailable="fill"``. Its coordinate then still shows the label that
+    was asked for, as `labels` does.
     """
 
     def __init__(
@@ -47,15 +48,19 @@ class OffsetView(View):
                     'e.g. np.arange(-3, 1) * np.timedelta64(1, "h").'
                 )
 
-    def select(self, point: Point) -> Indexers:
-        indexers: dict[Hashable, Any] = {}
+    def labels(self, point: Point) -> dict[Hashable, Any]:
+        """The point's labels plus the offsets, also where the source lacks them."""
+        labels: dict[Hashable, Any] = {}
         for dim, label in point.items():
             if dim not in self.ds.indexes:
                 continue
-            if dim in self.offsets:
-                label = label + self.offsets[dim]
-            indexers[dim] = self.locate(dim, label)
-        absent = set(self.offsets) - set(indexers)
+            labels[dim] = label + self.offsets[dim] if dim in self.offsets else label
+        absent = set(self.offsets) - set(labels)
         if absent:
             raise ValueError(f"Point has no label for offset dims {absent}.")
-        return indexers
+        return labels
+
+    def select(self, point: Point) -> Indexers:
+        return {
+            dim: self.locate(dim, label) for dim, label in self.labels(point).items()
+        }

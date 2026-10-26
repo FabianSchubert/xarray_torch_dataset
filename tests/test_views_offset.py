@@ -75,6 +75,31 @@ def test_fill_for_a_label_missing_from_the_source(source):
     assert out.a.isnull().all()
 
 
+def test_labels_are_the_point_plus_the_offsets_also_outside_the_source(source, times):
+    view = OffsetView(source, offsets={"time": OFFSETS})
+    labels = view.labels({"time": times[1], "member": 3})  # days -2, 0, 1, 3
+
+    assert set(labels) == {"time"}
+    np.testing.assert_array_equal(labels["time"], times[1] + OFFSETS)
+    assert not view.available({"time": times[1]})
+
+
+def test_fill_shows_the_labels_that_were_asked_for(source, times):
+    view = OffsetView(source, ["a"], offsets={"time": OFFSETS}, unavailable="fill")
+    out = view.fetch({"time": times[29]})  # days 26, 28, 29, 31
+
+    np.testing.assert_array_equal(out.time.values, times[29] + OFFSETS)
+    assert np.isnan(out.a.values[3]).all()
+
+    absent = np.datetime64("2021-06-01")
+    assert (
+        OffsetView(source, ["a"], unavailable="fill")
+        .fetch({"time": absent})
+        .time.values
+        == absent
+    )
+
+
 def test_offsets_along_other_labels_are_in_their_units():
     levels = xr.Dataset(
         {"t": (("level",), np.arange(4.0))}, coords={"level": [1000, 850, 500, 250]}

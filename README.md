@@ -82,6 +82,8 @@ Asking every view about every point happens when the dataset is constructed and 
 
 A filling view never rejects a point, so the other views decide which points the dataset has. If every view fills, no point is rejected at all, and a point that no source has data for becomes a sample of NaN; keep at least one rejecting view, typically the target, to avoid that. Because integers cannot hold NaN, a filling view returns integer and boolean values as floats, for every point.
 
+Whether a view has all data for a point, and which labels it selects, can be asked without reading anything. `view.available(point)` says whether something would be filled, which `accepts` cannot tell for a filling view. `view.labels(point)` gives the coordinate labels of the selection per dimension. For the whole dataset, `dataset.available("x")` and `dataset.labels("x")` give them for every sample, as arrays with one row per sample.
+
 All of this is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
 **Transforms.** A transform receives `{view name: xr.Dataset}` and returns the sample. The data is already in memory at that point: reading is the views' job, and a transform only reshapes what was read. Because it gets xarray objects, it can use names, dimensions and coordinates to build what the model needs.
@@ -108,6 +110,19 @@ class DayBeforeView(View):
 ```
 
 A label that the source lacks gives the position `None` (or `-1` inside an array of positions), which marks the data as missing. The labels along a dimension that a view looks up must be unique; `locate` raises otherwise. `select` should mark missing data this way rather than raise, and it should not read any data.
+
+A filled entry has NaN as its data and, by default, a missing label (NaT or NaN) as its coordinate. A view that knows which label it asked for although the source lacks it can say so by overriding `labels`; filling then puts that label on the coordinate. `OffsetView` does this, so a history window that reaches back before the source starts still shows the days it covers. A view that matches forecasts to points could report the run it chose and the lead time it needed in the same way, also when that run does not reach far enough.
+
+```python
+class DayBeforeView(View):
+    """The source's value one day before the point, labelled by that day."""
+
+    def labels(self, point):
+        return {"time": point["time"] - np.timedelta64(1, "D")}
+
+    def select(self, point):
+        return {"time": self.locate("time", self.labels(point)["time"])}
+```
 
 ## Reading from zarr
 

@@ -95,16 +95,48 @@ class View(ABC):
                 return None
         return index.get_indexer(labels)
 
+    def labels(self, point: Point) -> dict[Hashable, Any]:
+        """The coordinate labels of what the view selects for the point.
+
+        One entry per dimension that `select(point)` selects along and that
+        the source has an index for: a scalar label for a scalar position,
+        an array of labels for an array of positions. Nothing is read.
+
+        By default these are the source's labels at the selected positions,
+        with a missing label (NaT, or NaN) where a position is missing. The
+        labels of an integer or boolean index are floats where one is
+        missing, and always with ``unavailable="fill"``, as in `fetch`.
+
+        Override this in a view that knows what it asks for although the
+        source lacks it, such as a label plus an offset that lies outside
+        the source. Filling then puts these labels on the coordinates of
+        the missing entries. An override returns the dimensions and shapes
+        of the selection.
+        """
+        indexers = self.select(point)
+        exists = self._exists(indexers)
+        return {
+            dim: self._labels_at(dim, positions, exists[dim])
+            for dim, positions in indexers.items()
+            if dim in self.ds.indexes
+        }
+
+    def available(self, point: Point) -> bool:
+        """Whether everything that `select(point)` asks for exists.
+
+        Unlike `accepts`, this also tells for a filling view whether
+        something would be filled.
+        """
+        exists = self._exists(self.select(point))
+        return all(e.all() for e in exists.values())
+
     def accepts(self, point: Point) -> bool:
         """Whether the view can serve the point, as opposed to rejecting it.
 
         Always with ``unavailable="fill"``; otherwise only if everything that
         `select(point)` asks for exists.
         """
-        if self.unavailable == "fill":
-            return True
-        exists = self._exists(self.select(point))
-        return all(e.all() for e in exists.values())
+        return self.unavailable == "fill" or self.available(point)
 
     def fetch(self, point: Point) -> xr.Dataset:
         """Read the selection into memory.
@@ -116,7 +148,7 @@ class View(ABC):
         indexers = self.select(point)
         exists = self._exists(indexers)
         if self.unavailable == "fill":
-            out = self._fill(indexers, exists)
+            out = self._fill(point, indexers, exists)
         elif all(e.all() for e in exists.values()):
             out = self.ds.isel(indexers)
         else:
@@ -144,14 +176,32 @@ class View(ABC):
             exists[dim] = (positions >= 0) & (positions < self.ds.sizes[dim])
         return exists
 
+    def _labels_at(self, dim: Hashable, positions: Any, present: np.ndarray) -> Any:
+        """The labels of the source at `positions` along `dim`, see `labels`."""
+        values = self.ds[dim].values
+        if self.unavailable == "fill" and values.dtype.kind in "iub":
+            values = values.astype(float)
+        safe = np.where(present, 0 if positions is None else positions, 0)
+        if present.all():
+            return values[safe.astype(np.intp)]
+        kind = values.dtype.kind
+        dtype = float if kind in "iub" else values.dtype if kind in "fmM" else object
+        blank = np.array("NaT" if kind in "mM" else np.nan, dtype=dtype)
+        if not present.any():
+            # also for an empty source, which has no label to stand in
+            return np.full(present.shape, blank)[()]
+        return np.where(present, values[safe.astype(np.intp)].astype(dtype), blank)[()]
+
     def _fill(
-        self, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
+        self, point: Point, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
     ) -> xr.Dataset:
         """Read the selection, with NaN wherever a position is missing.
 
         The result has the shape a complete selection would have. Along a
-        dimension with missing positions, the coordinates of those entries
-        are masked as well (NaN or NaT). A variable is only missing along
+        dimension with missing positions, the coordinate of the dimension
+        gets the labels of `labels(point)` for those entries, which are
+        missing labels (NaN or NaT) unless a view overrides `labels`. Other
+        coordinates along it are masked. A variable is only missing along
         dimensions it has: one without ``time`` is returned as it is,
         whatever is missing along ``time``.
 
@@ -193,6 +243,7 @@ class View(ABC):
         out = _as_float(out, [n for n, c in self.ds.coords.items() if c.dims])
 
         # Step 2: blank out the stand-ins, one dimension at a time.
+        labels = None  # asked for only if something is missing
         for dim, present in exists.items():
             if present.all():
                 continue
@@ -207,13 +258,27 @@ class View(ABC):
             along_dim = [n for n, v in self.ds.variables.items() if dim in v.dims]
             # `where` keeps values where the mask is True and puts NaN
             # elsewhere. The coordinates are masked too; otherwise a
-            # missing entry would carry the label of the stand-in.
+            # missing entry would carry the label of the stand-in. The
+            # index of `dim` gets the labels that were asked for instead.
+            labelled = dim in self.ds.indexes
             out = out.assign(
                 {n: out[n].where(mask) for n in along_dim if n in out.data_vars}
             )
             out = out.assign_coords(
-                {n: out[n].where(mask).variable for n in along_dim if n in out.coords}
+                {
+                    n: out[n].where(mask).variable
+                    for n in along_dim
+                    if n in out.coords and not (labelled and n == dim)
+                }
             )
+            if labelled:
+                # It keeps its dtype, which must not depend on the sample.
+                if labels is None:
+                    labels = self.labels(point)
+                wanted = np.asarray(labels[dim])
+                if out[dim].dtype.kind in "fmM":
+                    wanted = wanted.astype(out[dim].dtype)
+                out = out.assign_coords({dim: (out[dim].dims, wanted)})
         return out
 
 
@@ -307,6 +372,28 @@ class XrDataset(Dataset):
                 f"{how_many} {len(points)} points were rejected: {by_view}. "
                 "(Each point is counted for the first view that rejected it.)"
             )
+
+    def labels(self, name: str) -> dict[Hashable, np.ndarray]:
+        """The labels that view `name` selects for every point, without reading.
+
+        Per dimension an array with one row per sample, in the order of the
+        samples, followed by the shape of the labels of one point: shape
+        (n_samples,) for a scalar label, (n_samples, window) for a window.
+        See `View.labels`.
+        """
+        view = self.views[name]
+        per_point = [view.labels(self.points[int(i)]) for i in self.indices]
+        return {dim: np.stack([p[dim] for p in per_point]) for dim in per_point[0]}
+
+    def available(self, name: str) -> np.ndarray:
+        """Whether view `name` has all data for every sample, without reading.
+
+        A bool array of shape (n_samples,). See `View.available`.
+        """
+        view = self.views[name]
+        return np.array(
+            [view.available(self.points[int(i)]) for i in self.indices], dtype=bool
+        )
 
     def __len__(self):
         return len(self.indices)

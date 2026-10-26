@@ -119,3 +119,37 @@ def test_batches_through_a_dataloader(source, times):
 
     assert batch["x"].shape == (5, 1, 3, 4)  # batch, variable, time, lat
     np.testing.assert_array_equal(batch["x"][1, 0], source.a.values[1:4])
+
+
+def test_labels_and_availability_of_every_sample(source, times):
+    views = {
+        "x": history(source, unavailable="fill"),
+        "y": OffsetView(source, ["a"], offsets={"time": [DAY]}),  # drops the last
+    }
+    dataset = XrDataset(PointGrid(time=times), views)
+
+    x = dataset.labels("x")
+    assert set(x) == {"time"} and x["time"].shape == (30, 3)
+    np.testing.assert_array_equal(x["time"][:, 2], times[:30])
+    np.testing.assert_array_equal(x["time"][0], times[0] + [-2 * DAY, -DAY, 0 * DAY])
+    np.testing.assert_array_equal(dataset.labels("y")["time"][:, 0], times[1:])
+    # the history is complete from the third day on
+    assert dataset.available("x").tolist() == [False, False] + [True] * 28
+    assert dataset.available("y").all()
+
+
+def test_labels_without_validation_cover_every_point(source, times):
+    dataset = XrDataset(PointGrid(time=times), {"x": history(source)}, validate=False)
+
+    assert dataset.labels("x")["time"].shape == (31, 3)
+    assert dataset.available("x").sum() == 29
+
+
+def test_labels_are_collected_without_reading(source, times):
+    class Unreadable(OffsetView):
+        def fetch(self, point):
+            raise AssertionError("fetch must not be called")
+
+    dataset = XrDataset(PointGrid(time=times), {"x": Unreadable(source)})
+    np.testing.assert_array_equal(dataset.labels("x")["time"], times)
+    assert dataset.available("x").all()
