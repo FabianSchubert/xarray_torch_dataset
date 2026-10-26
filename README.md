@@ -100,18 +100,13 @@ print({name: tensor.shape for name, tensor in batch.items()})
 ```mermaid
 flowchart TD
     fetch(["view.fetch(point)"]) --> select["positions = select(point)<br/>the view's own logic, reads nothing"]
-    select --> complete{"every position<br/>inside the source?"}
+    select --> complete{"available(point):<br/>every position inside the source?<br/>None and -1 are not"}
     complete -- "yes" --> read["read at the positions"]
-    complete -- "no" --> unavailable{"unavailable="}
-    unavailable -- "&quot;reject&quot;" --> error["IndexError"]
-    unavailable -- "&quot;fill&quot;" --> fill["read only the positions that exist;<br/>missing entries get NaN as data<br/>and labels(point) as coordinates"]
+    complete -- "no" --> setting{"the view's setting<br/>unavailable="}
+    setting -- "&quot;reject&quot;" --> error["IndexError<br/>a validated dataset has dropped<br/>such points already"]
+    setting -- "&quot;fill&quot;" --> fill["read only the positions that exist;<br/>missing entries get NaN as data<br/>and labels(point) as coordinates"]
     read --> loaded(["loaded xr.Dataset"])
     fill --> loaded
-
-    missing["missing: None, -1,<br/>or past the end"] -.- complete
-    available["available(point)<br/>asks this question"] -.- complete
-    accepts["accepts(point): always with &quot;fill&quot;,<br/>else available(point); the dataset<br/>drops points it rejects, so a validated<br/>dataset never reaches the IndexError"] -.- error
-    labels["labels(point): NaT or NaN by default,<br/>what the view asked for if it<br/>overrides labels"] -.- fill
 ```
 
 **Unavailable data.** A source may not have everything a point asks for: a history window can reach back before the source starts, or the source may lack the point's label. What happens then is decided in two places.
