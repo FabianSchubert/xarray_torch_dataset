@@ -111,15 +111,12 @@ class View(ABC):
         source lacks it, such as a label plus an offset that lies outside
         the source. Filling then puts these labels on the coordinates of
         the missing entries. An override returns the dimensions and shapes
-        of the selection.
+        of the selection, and where a position exists, the source's label
+        there; `fetch` checks this. So the coordinates of what `fetch`
+        returns are always these labels, in the dtype of the coordinate.
         """
         indexers = self.select(point)
-        exists = self._exists(indexers)
-        return {
-            dim: self._labels_at(dim, positions, exists[dim])
-            for dim, positions in indexers.items()
-            if dim in self.ds.indexes
-        }
+        return self._labels_of(indexers, self._exists(indexers))
 
     def available(self, point: Point) -> bool:
         """Whether everything that `select(point)` asks for exists.
@@ -144,11 +141,18 @@ class View(ABC):
         Reading is finished when this returns, so a transform works on
         data that is loaded. Override this for views that are not a
         selection; an override has to return loaded data as well.
+
+        Raises a ``ValueError`` if the view overrides `labels` and they do
+        not agree with `select`, see `labels`.
         """
         indexers = self.select(point)
         exists = self._exists(indexers)
+        labels = None  # by default taken from the positions, when needed
+        if type(self).labels is not View.labels:
+            labels = self.labels(point)
+            self._check_labels(point, labels, indexers, exists)
         if self.unavailable == "fill":
-            out = self._fill(point, indexers, exists)
+            out = self._fill(indexers, exists, labels)
         elif all(e.all() for e in exists.values()):
             out = self.ds.isel(indexers)
         else:
@@ -176,6 +180,48 @@ class View(ABC):
             exists[dim] = (positions >= 0) & (positions < self.ds.sizes[dim])
         return exists
 
+    def _labels_of(
+        self, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
+    ) -> dict[Hashable, Any]:
+        """The default `labels`, for the positions `indexers`."""
+        return {
+            dim: self._labels_at(dim, positions, exists[dim])
+            for dim, positions in indexers.items()
+            if dim in self.ds.indexes
+        }
+
+    def _check_labels(
+        self,
+        point: Point,
+        labels: Mapping[Hashable, Any],
+        indexers: Indexers,
+        exists: Mapping[Hashable, np.ndarray],
+    ) -> None:
+        """Raise if overridden `labels` do not agree with `select`."""
+        name = type(self).__name__
+        dims = [dim for dim in indexers if dim in self.ds.indexes]
+        if set(labels) != set(dims):
+            raise ValueError(
+                f"{name}.labels gives the dimensions {sorted(map(str, labels))} "
+                f"for {point!r}, but select selects along {sorted(map(str, dims))}."
+            )
+        for dim in dims:
+            wanted, present = np.asarray(labels[dim]), exists[dim]
+            if wanted.shape != present.shape:
+                raise ValueError(
+                    f"{name}.labels gives the shape {wanted.shape} along {dim!r} "
+                    f"for {point!r}, but select gives {present.shape}."
+                )
+            if not present.any():
+                continue
+            found = self.ds[dim].values[np.asarray(indexers[dim])[present]]
+            if not np.array_equal(wanted[present], found):
+                raise ValueError(
+                    f"{name}.labels and select disagree along {dim!r} for "
+                    f"{point!r}: labels {wanted[present]} where the source has "
+                    f"{found}."
+                )
+
     def _labels_at(self, dim: Hashable, positions: Any, present: np.ndarray) -> Any:
         """The labels of the source at `positions` along `dim`, see `labels`."""
         values = self.ds[dim].values
@@ -193,17 +239,20 @@ class View(ABC):
         return np.where(present, values[safe.astype(np.intp)].astype(dtype), blank)[()]
 
     def _fill(
-        self, point: Point, indexers: Indexers, exists: Mapping[Hashable, np.ndarray]
+        self,
+        indexers: Indexers,
+        exists: Mapping[Hashable, np.ndarray],
+        labels: Mapping[Hashable, Any] | None,
     ) -> xr.Dataset:
         """Read the selection, with NaN wherever a position is missing.
 
         The result has the shape a complete selection would have. Along a
         dimension with missing positions, the coordinate of the dimension
-        gets the labels of `labels(point)` for those entries, which are
-        missing labels (NaN or NaT) unless a view overrides `labels`. Other
-        coordinates along it are masked. A variable is only missing along
-        dimensions it has: one without ``time`` is returned as it is,
-        whatever is missing along ``time``.
+        gets `labels` for those entries, or the default labels if `labels`
+        is ``None``: missing labels (NaN or NaT). Other coordinates along
+        it are masked. A variable is only missing along dimensions it has:
+        one without ``time`` is returned as it is, whatever is missing
+        along ``time``.
 
         Integer and boolean values cannot hold NaN, so they are returned as
         floats. That holds for a complete selection too, so that the dtype
@@ -243,7 +292,6 @@ class View(ABC):
         out = _as_float(out, [n for n, c in self.ds.coords.items() if c.dims])
 
         # Step 2: blank out the stand-ins, one dimension at a time.
-        labels = None  # asked for only if something is missing
         for dim, present in exists.items():
             if present.all():
                 continue
@@ -274,7 +322,7 @@ class View(ABC):
             if labelled:
                 # It keeps its dtype, which must not depend on the sample.
                 if labels is None:
-                    labels = self.labels(point)
+                    labels = self._labels_of(indexers, exists)
                 wanted = np.asarray(labels[dim])
                 if out[dim].dtype.kind in "fmM":
                     wanted = wanted.astype(out[dim].dtype)

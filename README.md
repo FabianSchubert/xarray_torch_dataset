@@ -151,6 +151,8 @@ A label that the source lacks gives the position `None` (or `-1` inside an array
 
 A filled entry has NaN as its data and, by default, a missing label (NaT or NaN) as its coordinate. A view that knows which label it asked for although the source lacks it can say so by overriding `labels`; filling then puts that label on the coordinate. `OffsetView` does this, so a history window that reaches back before the source starts still shows the days it covers. A view that matches forecasts to points could report the run it chose and the lead time it needed in the same way, also when that run does not reach far enough.
 
+Where a position exists, an override must report the source's label there, so that labels and positions describe the same selection. `fetch` checks this and raises a `ValueError` if they disagree. The coordinates of what `fetch` returns are therefore always `labels(point)`, whether the data was read or filled. The simplest way to get this right is to compute the labels and let `select` locate them, as in the example below.
+
 ```python
 class DayBeforeView(View):
     """The source's value one day before the point, labelled by that day."""

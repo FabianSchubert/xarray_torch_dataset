@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 import xarray as xr
-from conftest import Positions, at
+from conftest import DAY, Positions, at
 
 from xarray_torch_dataset import View
 
@@ -326,10 +326,45 @@ def test_fill_puts_a_scalar_label_of_an_override_on_a_missing_sample(source):
     assert out.a.isnull().all()
 
 
-def test_complete_selections_are_not_relabelled(source, times):
+@pytest.mark.parametrize(
+    ("positions", "days"),
+    [([0, 1], [0, 1]), ([-1, 0, 31], [-1, 0, 31]), (3, 3), (None, 400)],
+)
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_coordinates_are_the_labels_of_an_override(
+    source, times, positions, days, unavailable
+):
+    # labels that agree with select where the source has the positions
+    wanted = times[0] + np.asarray(days) * DAY
+    view = Wanted(source, unavailable=unavailable)
+    point = {"positions": {"time": positions}, "wanted": {"time": wanted}}
+    if not view.available(point) and unavailable == "reject":
+        return  # a rejecting view cannot fetch it
+    np.testing.assert_array_equal(view.fetch(point).time.values, wanted)
+
+
+@pytest.mark.parametrize("positions", [[0, 1], [0, 31]])
+@pytest.mark.parametrize("unavailable", ["reject", "fill"])
+def test_labels_that_disagree_with_select_raise(source, times, positions, unavailable):
+    view = Wanted(source, unavailable=unavailable)
+    point = {"positions": {"time": positions}, "wanted": {"time": times[[5, 6]]}}
+    if not view.available(point) and unavailable == "reject":
+        return  # a rejecting view cannot fetch it
+    with pytest.raises(ValueError, match="disagree along 'time'"):
+        view.fetch(point)
+
+
+@pytest.mark.parametrize(
+    ("wanted", "message"),
+    [
+        ({}, "gives the dimensions"),
+        ({"time": [np.datetime64("2020-01-01")]}, "gives the shape"),
+    ],
+)
+def test_labels_of_the_wrong_dimensions_or_shape_raise(source, wanted, message):
     view = Wanted(source, unavailable="fill")
-    point = {"positions": {"time": [0, 1]}, "wanted": {"time": times[[5, 6]]}}
-    np.testing.assert_array_equal(view.fetch(point).time.values, times[[0, 1]])
+    with pytest.raises(ValueError, match=message):
+        view.fetch({"positions": {"time": [0, 31]}, "wanted": wanted})
 
 
 @pytest.mark.parametrize(
@@ -344,3 +379,16 @@ def test_available_tells_whether_something_is_missing(
     assert view.available(at(time=positions)) is available
     # a filling view accepts the point all the same
     assert view.accepts(at(time=positions)) is (available or unavailable == "fill")
+
+
+@pytest.mark.parametrize("positions", [[0, 1], [-1, 0, 31], None])
+def test_fetch_selects_once_without_an_override(source, positions):
+    class Counting(Positions):
+        calls = 0
+
+        def select(self, point):
+            Counting.calls += 1
+            return super().select(point)
+
+    Counting(source, unavailable="fill").fetch(at(time=positions))
+    assert Counting.calls == 1
