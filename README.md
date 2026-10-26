@@ -129,7 +129,7 @@ The benchmark results are in `STATUS.md`, and the scripts in `benchmarks/`.
 ## Development
 
 ```bash
-git clone https://github.com/FabianSchubert/xarray_torch_dataset.git
+git clone git@gitlab.dkrz.de:b383481/xarray_torch_dataset.git
 cd xarray_torch_dataset
 uv sync
 uv run pre-commit install

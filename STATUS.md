@@ -146,7 +146,7 @@ uv run python benchmarks/weatherbench2.py remote
 ## Setting up on another machine
 
 ```bash
-git clone https://github.com/FabianSchubert/xarray_torch_dataset.git
+git clone git@gitlab.dkrz.de:b383481/xarray_torch_dataset.git
 cd xarray_torch_dataset
 uv sync                      # creates .venv from uv.lock
 uv run pre-commit install    # the git hook is per clone, not part of the repo
@@ -157,7 +157,7 @@ Prerequisites that are per machine and not stored in the repo:
 
 - `uv` (install: `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 - Git identity (`git config user.name` / `user.email`).
-- GitHub authentication for the private repo. With the GitHub CLI: `gh auth login`, then `gh auth setup-git` so plain `git pull` / `git push` work over HTTPS.
+- SSH access to the DKRZ GitLab (`gitlab.dkrz.de`), with a key registered in the GitLab account, since the repository is cloned over SSH.
 
 The default `torch` wheel on Linux pulls in the CUDA libraries, so `.venv` is several GB even on a machine without a GPU.
 
