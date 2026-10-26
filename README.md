@@ -100,7 +100,7 @@ print({name: tensor.shape for name, tensor in batch.items()})
 ```mermaid
 flowchart TD
     fetch(["view.fetch(point)"]) --> select["positions = select(point)<br/>the view's own logic, reads nothing"]
-    select --> complete{"available(point):<br/>every position inside the source?<br/>None and -1 are not"}
+    select -- "positions" --> complete{"every position inside the source?<br/>None and -1 are not<br/>(what available(point) asks)"}
     complete -- "yes" --> read["read at the positions"]
     complete -- "no" --> setting{"the view's setting<br/>unavailable="}
     setting -- "&quot;reject&quot;" --> error["IndexError<br/>a validated dataset has dropped<br/>such points already"]
