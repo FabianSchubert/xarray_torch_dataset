@@ -97,7 +97,7 @@ print({name: tensor.shape for name, tensor in batch.items()})
 
 **Unavailable data.** A source may not have everything a point asks for: a history window can reach back before the source starts, or the source may lack the point's label. What happens then is decided in two places.
 
-- Each view takes `unavailable="reject"` (the default) or `unavailable="fill"`. With `"reject"`, the view rejects such a point. With `"fill"`, it accepts every point and returns NaN for whatever the source lacks, in the shape a complete selection would have.
+- Each view takes `unavailable="reject"` (the default) or `unavailable="fill"`. With `"reject"`, the view rejects such a point. With `"fill"`, it accepts every point and returns NaN for whatever the source lacks, in the shape a complete selection would have. `view.accepts(point)` gives this answer; the dataset asks it of every view for every point at construction, to decide which points to keep. Override it only for a cheaper check.
 - The dataset takes `rejected="drop"` (the default) or `rejected="raise"`. With `"drop"`, points that some view rejected are left out. With `"raise"`, they are an error at construction, which helps to catch a misaligned source.
 
 `dataset.n_rejected` says how many points each view rejected, for example `{"x": 3, "y": 0}`. A few points rejected by a history view are an edge effect; most points rejected by one view usually mean that its source is on a different grid. A point rejected by several views is counted for the first of them.
@@ -106,7 +106,7 @@ Asking every view about every point happens when the dataset is constructed and 
 
 A filling view never rejects a point, so the other views decide which points the dataset has. If every view fills, no point is rejected at all, and a point that no source has data for becomes a sample of NaN; keep at least one rejecting view, typically the target, to avoid that. Because integers cannot hold NaN, a filling view returns integer and boolean values as floats, for every point.
 
-Whether a view has all data for a point, and which labels it selects, can be asked without reading anything. `view.available(point)` says whether something would be filled, which `accepts` cannot tell for a filling view. `view.labels(point)` gives the coordinate labels of the selection per dimension. For the whole dataset, `dataset.available("x")` and `dataset.labels("x")` give them for every sample, as arrays with one row per sample.
+Whether a view has all data for a point, and which labels it selects, can be asked without reading anything. `view.available(point)` says whether the view has all data for the point. For a rejecting view this is the same answer as `accepts`; a filling view accepts every point, so only `available` tells whether something would be filled. `view.labels(point)` gives the coordinate labels of the selection per dimension. For the whole dataset, `dataset.available("x")` and `dataset.labels("x")` give them for every sample, as arrays with one row per sample.
 
 All of this is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
