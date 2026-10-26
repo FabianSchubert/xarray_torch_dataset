@@ -15,17 +15,18 @@ flowchart LR
 
     subgraph dataset["XrDataset[i]"]
         point["point<br/>{dim: label}"]
-        subgraph view["View, one per source"]
-            select["select(point)<br/>positions, no reading"]
-            fetch["fetch(point)<br/>reads, or fills with NaN"]
+        subgraph view["view.fetch(point), one view per source"]
+            select["select(point)<br/>no reading"]
+            read["read at the positions,<br/>or fill with NaN"]
         end
         transform["transform<br/>e.g. ToTensors"]
     end
 
     source[("xarray source<br/>e.g. a zarr store")]
-    point --> select --> fetch
-    source --> fetch
-    fetch -- "{view name: xr.Dataset}" --> transform
+    point --> select
+    select -- "positions" --> read
+    source --> read
+    read -- "{view name: xr.Dataset}" --> transform
     transform -- "sample" --> loader
 ```
 
