@@ -6,7 +6,7 @@ import numpy as np
 import xarray as xr
 
 from xarray_torch_dataset import OffsetView, PointGrid
-from xarray_torch_dataset.arguments import describe
+from xarray_torch_dataset.arguments import describe, differences
 
 
 def test_plain_values_stay_as_they_are():
@@ -108,3 +108,61 @@ def test_the_values_can_be_stored_as_json_and_are_the_same_each_time():
     assert json.loads(json.dumps(first.values)) == first.values
     assert first.values == second.values
     assert first.arrays.keys() == second.arrays.keys()
+
+
+# -- comparing two descriptions ----------------------------------------------------
+
+DAYS = np.arange("2024-01-01", "2024-01-11", dtype="datetime64[D]")
+
+
+def compared(recorded, given):
+    return differences(describe(recorded), describe(given))
+
+
+def test_the_same_arguments_do_not_differ():
+    arguments = {"days": DAYS, "filter": Filter(DAYS, every=6), "crop": (1, 4)}
+    assert compared(arguments, arguments) == []
+
+
+def test_a_changed_value_is_named_by_its_path():
+    assert compared({"crop": (1, 4), "n": 3}, {"crop": (1, 5), "n": 3}) == ["crop.1"]
+    assert compared({"name": "fc"}, {"name": "obs"}) == ["name"]
+
+
+def test_a_changed_array_is_named_by_its_path():
+    assert compared({"days": DAYS}, {"days": DAYS[:-1]}) == ["days"]
+    assert compared({"days": DAYS}, {"days": DAYS + np.timedelta64(1, "D")}) == ["days"]
+    nested = {"filter": Filter(DAYS, every=6)}
+    changed = {"filter": Filter(DAYS[::2], every=6)}
+    assert compared(nested, changed) == ["filter.valid_times"]
+
+
+def test_times_are_compared_whatever_their_unit():
+    assert compared({"days": DAYS}, {"days": DAYS.astype("datetime64[ns]")}) == []
+
+
+def test_an_object_of_another_class_differs():
+    class Other(Filter):
+        pass
+
+    assert compared({"filter": Filter(DAYS, 6)}, {"filter": Other(DAYS, 6)}) == [
+        "filter"
+    ]
+
+
+def test_what_only_one_has_differs():
+    assert compared({"n": 3}, {"n": 3, "m": 4}) == ["m"]
+    assert compared({"crop": (1, 4)}, {"crop": (1, 4, 7)}) == ["crop"]
+    assert compared({"days": DAYS}, {"days": 3}) == ["days"]
+
+
+def test_what_was_left_out_is_not_compared():
+    assert compared({"data": xr.Dataset()}, {"data": xr.Dataset({"a": 1})}) == []
+
+
+def test_a_description_read_back_from_json_compares_equal():
+    """Stored descriptions lose tuples and come back from JSON."""
+    described = describe({"crop": (1, 4), "filter": Filter(DAYS, every=6)})
+    stored = json.loads(json.dumps(described.values))
+    recorded = type(described)(stored, described.arrays, described.left_out)
+    assert differences(recorded, described) == []

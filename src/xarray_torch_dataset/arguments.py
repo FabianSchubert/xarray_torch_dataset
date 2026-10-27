@@ -96,6 +96,75 @@ def _describe(value: Any, path: str, description: Description, seen: set[int]) -
     }
 
 
+def differences(recorded: Description, given: Description) -> list[str]:
+    """The paths at which two descriptions of arguments differ.
+
+    Plain values must be equal, and arrays have the same shape and values,
+    whatever their unit of time. A path that only one of them has differs,
+    as does a list of another length. What was left out of either is not
+    compared.
+    """
+    found: list[str] = []
+    for name in recorded.values.keys() | given.values.keys():
+        _compare(
+            recorded.values.get(name, _ABSENT),
+            given.values.get(name, _ABSENT),
+            name,
+            recorded,
+            given,
+            found,
+        )
+    return sorted(found)
+
+
+# stands for a path that one of two descriptions does not have
+_ABSENT = object()
+
+
+def _compare(
+    a: Any, b: Any, path: str, recorded: Description, given: Description, found: list
+) -> None:
+    """Add `path` to `found` where the described values `a` and `b` differ."""
+    if _is(a, "left out") or _is(b, "left out"):
+        return
+    if _is(a, "array") and _is(b, "array"):
+        x, y = recorded.arrays[a["array"]], given.arrays[b["array"]]
+        if x.shape != y.shape or not np.array_equal(x, y):
+            found.append(path)
+    elif _is_object(a) and _is_object(b):
+        # an object is named by its own path, its attributes below it, as
+        # `describe` names their arrays
+        if a["class"] != b["class"]:
+            found.append(path)
+        else:
+            _compare(a["attributes"], b["attributes"], path, recorded, given, found)
+    elif isinstance(a, Mapping) and isinstance(b, Mapping):
+        for key in a.keys() | b.keys():
+            _compare(
+                a.get(key, _ABSENT),
+                b.get(key, _ABSENT),
+                f"{path}.{key}",
+                recorded,
+                given,
+                found,
+            )
+    elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        for i, (x, y) in enumerate(zip(a, b, strict=True)):
+            _compare(x, y, f"{path}.{i}", recorded, given, found)
+    elif a is _ABSENT or b is _ABSENT or a != b:
+        found.append(path)
+
+
+def _is_object(value: Any) -> bool:
+    """Whether a described value stands for an object by class and attributes."""
+    return isinstance(value, Mapping) and set(value) == {"class", "attributes"}
+
+
+def _is(value: Any, kind: str) -> bool:
+    """Whether a described value stands for an array or something left out."""
+    return isinstance(value, Mapping) and list(value) == [kind]
+
+
 def _name(function: Any) -> str:
     """The module and qualified name of a function or class."""
     return f"{function.__module__}.{function.__qualname__}"
