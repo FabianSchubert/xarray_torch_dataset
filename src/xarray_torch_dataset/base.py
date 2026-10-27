@@ -12,13 +12,16 @@ that every view can serve.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 import numpy as np
 import xarray as xr
 from torch.utils.data import Dataset
+
+if TYPE_CHECKING:
+    from xarray_torch_dataset.cache import CacheView
 
 Point = Mapping[str, Any]
 Indexers = Mapping[Hashable, Any]
@@ -360,18 +363,21 @@ def _as_float(ds: xr.Dataset, coords: Sequence[Hashable]) -> xr.Dataset:
 
 
 class XrDataset(Dataset):
-    """Serves, for each accepted point, ``{name: view.fetch(point)}``.
+    """Serves, for each accepted point, ``transform(prepare(data))``.
 
-    The data of each view is an ``xr.Dataset`` that is loaded into memory.
-    `transform` receives that dict and returns the sample. A DataLoader
-    needs a transform that returns tensors or arrays, such as `ToTensors`,
-    because torch cannot batch xarray objects.
+    `data` is ``{name: view.fetch(point)}``, an ``xr.Dataset`` per view that
+    is loaded into memory. A subclass overrides the two stages: `prepare`
+    does the expensive part and returns one ``xr.Dataset`` per sample, the
+    prepared sample, and `transform` turns that into the sample. Both return
+    their input unchanged by default, so that a plain `XrDataset` serves the
+    data as fetched. A DataLoader needs a `transform` that returns tensors
+    or arrays, such as `ToTensors`, because torch cannot batch xarray
+    objects.
 
-    The transform can come in two stages: `prepare` does the expensive part
-    and returns one ``xr.Dataset`` per sample, the prepared sample, and
-    `transform` turns that into the sample. `cache` stores the prepared
-    samples, and `from_cache` reads them back, so that the same `transform`
-    serves both.
+    `cache` stores the prepared samples, and `from_cache` reads them back
+    into an instance of the same class, whose `transform` then gives the
+    same samples. As such an instance is not built by ``__init__``,
+    `transform` must not use what ``__init__`` sets.
 
     Points that some view rejects are dropped at construction, or
     reported if ``rejected="raise"``. `n_rejected` says how many points
@@ -386,15 +392,11 @@ class XrDataset(Dataset):
         self,
         points: Points,
         views: Mapping[str, View],
-        transform: Callable | None = None,
-        prepare: Callable[[dict[str, xr.Dataset]], xr.Dataset] | None = None,
         rejected: Literal["drop", "raise"] = "drop",
         validate: bool = True,
     ):
         self.points = points
         self.views = views
-        self.transform = transform
-        self.prepare = prepare
         if not len(points):
             raise ValueError("There are no points.")
         # positions in `points` of the points the dataset serves
@@ -455,17 +457,51 @@ class XrDataset(Dataset):
     def __len__(self):
         return len(self.indices)
 
-    def __getitem__(self, idx):
+    def prepare(self, data: dict[str, xr.Dataset]) -> Any:
+        """The expensive part of a sample, which `cache` stores.
+
+        Returns `data`, the fetched data of every view, unchanged. A subclass
+        that is cached returns one ``xr.Dataset`` per sample.
+        """
+        return data
+
+    def transform(self, sample: Any) -> Any:
+        """The cheap part of a sample, applied whenever it is read.
+
+        Returns `sample`, the prepared sample, unchanged.
+        """
+        return sample
+
+    @property
+    def cached(self) -> bool:
+        """Whether the dataset reads a cache, see `from_cache`."""
+        return self._cache_view() is not None
+
+    def _cache_view(self) -> "CacheView | None":
+        """The view of a dataset that reads a cache, its only view; else None."""
+        from xarray_torch_dataset.cache import CacheView
+
+        view = self.views.get("cache")
+        return view if len(self.views) == 1 and isinstance(view, CacheView) else None
+
+    def _prepared(self, idx: int) -> Any:
+        """The prepared sample of the `idx`-th point: from the views, or the cache."""
         point = self.points[int(self.indices[idx])]
         data = {name: view.fetch(point) for name, view in self.views.items()}
-        sample = self.prepare(data) if self.prepare else data
-        return self.transform(sample) if self.transform else sample
+        cache = self._cache_view()
+        if cache is not None:
+            return cache.prepared_sample(data["cache"])
+        return self.prepare(data)
+
+    def __getitem__(self, idx):
+        return self.transform(self._prepared(idx))
 
     def cache(self, path: str | Path, **options: Any) -> None:
         """Write the prepared sample of every point to a zarr store at `path`.
 
         See `xarray_torch_dataset.cache.write_cache` for the layout of the
-        store and the `options`. Needs `prepare`.
+        store and the `options`. Needs a `prepare` that returns an
+        ``xr.Dataset``, or a dataset that reads a cache.
         """
         from xarray_torch_dataset.cache import write_cache
 
@@ -475,28 +511,26 @@ class XrDataset(Dataset):
     def from_cache(
         cls,
         path: str | Path,
-        transform: Callable | None = None,
         points: Points | None = None,
         rejected: Literal["drop", "raise"] = "drop",
-    ) -> "XrDataset":
-        """A dataset of the prepared samples that `cache` wrote to `path`.
+    ) -> Self:
+        """An instance of this class on the prepared samples `cache` wrote.
 
-        Its samples are ``transform(prepared sample)``, so the `transform` of
-        the dataset that was cached gives the same samples. `points` reads
-        part of the cache, by default all of it; a point the cache lacks is
-        rejected as by any view. The result is an `XrDataset`, also when
-        called on a subclass, whose constructor needs sources that a cached
-        dataset does not have.
+        Its samples are ``transform(prepared sample)``, read from `path`.
+        `points` reads part of the cache, by default all of it; a point the
+        cache lacks is rejected as by any view. The instance is not built by
+        ``__init__``, whose sources a cached dataset does not need.
         """
-        from xarray_torch_dataset.cache import CachedRow, CacheView
+        from xarray_torch_dataset.cache import CacheView
 
         view = CacheView(path)
-        return XrDataset(
+        dataset = cls.__new__(cls)
+        XrDataset.__init__(
+            dataset,
             view.points if points is None else points,
             {"cache": view},
-            transform=transform,
-            prepare=CachedRow(view.point_dims),
             rejected=rejected,
             # the points of the cache are all in it
             validate=points is not None,
         )
+        return dataset

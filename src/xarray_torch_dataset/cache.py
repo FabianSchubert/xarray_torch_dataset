@@ -1,16 +1,11 @@
 """Caching prepared samples in a zarr store, and reading them back as a view.
 
-A dataset with ``prepare`` serves ``transform(prepare(data))``.
-`XrDataset.cache` writes ``prepare(data)`` of every point with `write_cache`,
-and `XrDataset.from_cache` reads them back through a `CacheView`, so that::
-
-    XrDataset(points, views, transform=finish, prepare=prepare)
-    XrDataset.from_cache(path, transform=finish)
-
-give the same samples.
+An `XrDataset` serves ``transform(prepare(data))``. `XrDataset.cache`
+writes ``prepare(data)`` of every point with `write_cache`, and
+`XrDataset.from_cache` reads them back through a `CacheView`, so that a
+subclass and its ``from_cache`` give the same samples.
 """
 
-import copy
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
@@ -67,22 +62,19 @@ def write_cache(
     DataLoader of `batch_size` and `num_workers`, and written a whole shard
     at a time. `multiprocessing_context` is the DataLoader's start method of
     the workers; ``"forkserver"`` avoids forking a process in which zarr or
-    dask already run threads, and needs a dataset whose views and transform
+    dask already run threads, and needs a dataset whose class and views
     can be pickled and imported. An existing store at `path` raises a
     ``FileExistsError`` unless `overwrite` is set.
     """
-    if dataset.prepare is None:
+    if type(dataset).prepare is XrDataset.prepare and not dataset.cached:
         raise ValueError(
-            "Only a dataset with `prepare` can be cached: what prepare returns "
-            "is what the cache stores."
+            "Only a dataset that overrides `prepare` can be cached: what prepare "
+            "returns is what the cache stores."
         )
     path = Path(path)
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} exists.")
-    # the same dataset, serving the prepared samples
-    dataset = copy.copy(dataset)
-    dataset.transform = None
-    template = _prepared(dataset[0])
+    template = _checked(dataset._prepared(0))
     point_dims = _point_dims(dataset)
     names = [*template.data_vars, *template.coords, *point_dims]
     clash = {str(n) for n in names if names.count(n) > 1}
@@ -135,7 +127,7 @@ def write_cache(
         writers[name] = SampleWriter(array)
 
     loader = torch.utils.data.DataLoader(
-        dataset,
+        _PreparedSamples(dataset),
         batch_size=batch_size,
         num_workers=num_workers,
         collate_fn=_Stack(template),
@@ -196,6 +188,16 @@ class CacheView(View):
         if len(self._rows) < len(self.points):
             raise ValueError(f"{path} holds some points more than once.")
 
+    def prepared_sample(self, row: xr.Dataset) -> xr.Dataset:
+        """The prepared sample in the fetched row of a point.
+
+        That is the row without the labels of the point and the attributes of
+        the store, which belong to the store, see `attrs`.
+        """
+        sample = row.drop_vars(self.point_dims)
+        sample.attrs = {}
+        return sample
+
     def select(self, point: Point) -> Indexers:
         key = tuple(
             np.asarray(point[dim]).astype(self._dtypes[dim]).item()
@@ -204,25 +206,20 @@ class CacheView(View):
         return {SAMPLE_DIM: self._rows.get(key)}
 
 
-class CachedRow:
-    """The prepared sample in the row of a point: the row without its labels.
+class _PreparedSamples(torch.utils.data.Dataset):
+    """The prepared samples of a dataset, for a DataLoader to read."""
 
-    The `prepare` of a dataset that `XrDataset.from_cache` reads. A class
-    rather than a function, so that the workers of a DataLoader can receive
-    it.
-    """
+    def __init__(self, dataset: XrDataset):
+        self.dataset = dataset
 
-    def __init__(self, point_dims: Sequence[str]):
-        self.point_dims = list(point_dims)
+    def __len__(self) -> int:
+        return len(self.dataset)
 
-    def __call__(self, data: dict[str, xr.Dataset]) -> xr.Dataset:
-        row = data["cache"].drop_vars(self.point_dims)
-        # the attributes of the store belong to the store, see CacheView.attrs
-        row.attrs = {}
-        return row
+    def __getitem__(self, idx: int) -> Any:
+        return self.dataset._prepared(idx)
 
 
-def _prepared(sample: Any) -> xr.Dataset:
+def _checked(sample: Any) -> xr.Dataset:
     """The prepared sample, checked to be an ``xr.Dataset``."""
     if not isinstance(sample, xr.Dataset):
         raise TypeError(
@@ -276,7 +273,7 @@ class _Stack:
 
     def __call__(self, samples: list[Any]) -> dict[Hashable, np.ndarray]:
         for sample in samples:
-            self._check(_prepared(sample))
+            self._check(_checked(sample))
         return {
             name: np.stack([sample[name].values for sample in samples])
             for name in self.template.data_vars

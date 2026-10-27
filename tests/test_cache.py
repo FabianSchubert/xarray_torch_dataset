@@ -48,12 +48,25 @@ def finish(prepared):
     return prepared["x"].values, bool(prepared["complete"])
 
 
-def raw_dataset(field, points=None, **kwargs):
+class Windows(XrDataset):
+    """Three days up to a point, prepared; the prepared samples are the samples."""
+
+    def prepare(self, data):
+        return prepare(data)
+
+
+class Finished(Windows):
+    """`Windows` with `finish` as the cheap stage."""
+
+    def transform(self, sample):
+        return finish(sample)
+
+
+def raw_dataset(field, points=None, cls=Windows, **kwargs):
     view = OffsetView(
         field, ["a"], offsets={"time": [-2 * DAY, -DAY, 0 * DAY]}, unavailable="fill"
     )
-    points = points or PointGrid(time=TIMES)
-    return XrDataset(points, {"x": view}, prepare=prepare, **kwargs)
+    return cls(points or PointGrid(time=TIMES), {"x": view}, **kwargs)
 
 
 def assert_same_samples(raw, cached):
@@ -78,14 +91,14 @@ def test_cached_samples_are_the_prepared_samples(
         num_workers=num_workers,
         multiprocessing_context="forkserver",
     )
-    assert_same_samples(raw, XrDataset.from_cache(tmp_path / "cache.zarr"))
+    assert_same_samples(raw, Windows.from_cache(tmp_path / "cache.zarr"))
 
 
 def test_the_transform_serves_raw_and_cached_samples(tmp_path, field):
-    raw = raw_dataset(field)
-    raw.transform = finish
+    raw = raw_dataset(field, cls=Finished)
     raw.cache(tmp_path / "cache.zarr")
-    cached = XrDataset.from_cache(tmp_path / "cache.zarr", transform=finish)
+    cached = Finished.from_cache(tmp_path / "cache.zarr")
+    assert cached.cached and not raw.cached
     for i in range(len(raw)):
         (a, flag_a), (b, flag_b) = raw[i], cached[i]
         np.testing.assert_array_equal(a, b)
@@ -94,25 +107,25 @@ def test_the_transform_serves_raw_and_cached_samples(tmp_path, field):
 
 def test_a_cached_dataset_can_be_cached_again(tmp_path, field):
     raw_dataset(field).cache(tmp_path / "cache.zarr")
-    XrDataset.from_cache(tmp_path / "cache.zarr").cache(tmp_path / "copy.zarr")
-    assert_same_samples(
-        raw_dataset(field), XrDataset.from_cache(tmp_path / "copy.zarr")
-    )
+    Windows.from_cache(tmp_path / "cache.zarr").cache(tmp_path / "copy.zarr")
+    assert_same_samples(raw_dataset(field), Windows.from_cache(tmp_path / "copy.zarr"))
 
 
-def test_from_cache_gives_a_plain_dataset_also_on_a_subclass(tmp_path, field):
-    class Daily(XrDataset):
+def test_from_cache_gives_the_class_without_running_its_init(tmp_path, field):
+    class Daily(Windows):
         def __init__(self, source):
             super().__init__(PointGrid(time=TIMES), {"x": OffsetView(source)})
+            self.source = source
 
     raw_dataset(field).cache(tmp_path / "cache.zarr")
-    assert type(Daily.from_cache(tmp_path / "cache.zarr")) is XrDataset
+    cached = Daily.from_cache(tmp_path / "cache.zarr")
+    assert type(cached) is Daily
+    assert not hasattr(cached, "source")
 
 
 def test_only_a_dataset_with_prepare_is_cached(tmp_path, field):
-    dataset = raw_dataset(field)
-    dataset.prepare = None
-    with pytest.raises(ValueError, match="Only a dataset with `prepare`"):
+    dataset = raw_dataset(field, cls=XrDataset)
+    with pytest.raises(ValueError, match="overrides `prepare`"):
         dataset.cache(tmp_path / "cache.zarr")
     assert not (tmp_path / "cache.zarr").exists()
 
@@ -136,7 +149,7 @@ def test_part_of_a_cache_is_read_by_giving_its_points(tmp_path, field):
     part = PointTable(time=TIMES[[8, 3]])
     assert_same_samples(
         raw_dataset(field, part),
-        XrDataset.from_cache(tmp_path / "cache.zarr", points=part),
+        Windows.from_cache(tmp_path / "cache.zarr", points=part),
     )
 
 
@@ -150,10 +163,10 @@ def test_points_are_found_whatever_the_unit_of_their_labels(tmp_path, field):
 def test_points_the_cache_lacks_are_rejected(tmp_path, field):
     raw_dataset(field, PointTable(time=TIMES[:5])).cache(tmp_path / "c.zarr")
     all_days = PointGrid(time=TIMES)
-    dataset = XrDataset.from_cache(tmp_path / "c.zarr", points=all_days)
+    dataset = Windows.from_cache(tmp_path / "c.zarr", points=all_days)
     assert len(dataset) == 5 and dataset.n_rejected == {"cache": 5}
     with pytest.raises(ValueError, match="5 of 10 points were rejected"):
-        XrDataset.from_cache(tmp_path / "c.zarr", points=all_days, rejected="raise")
+        Windows.from_cache(tmp_path / "c.zarr", points=all_days, rejected="raise")
 
 
 def test_attrs_are_kept(tmp_path, field):
@@ -161,7 +174,7 @@ def test_attrs_are_kept(tmp_path, field):
     raw_dataset(field).cache(tmp_path / "cache.zarr", attrs=attrs)
     assert CacheView(tmp_path / "cache.zarr").attrs == attrs
     # they belong to the store, not to the samples
-    assert XrDataset.from_cache(tmp_path / "cache.zarr")[0].attrs == {}
+    assert Windows.from_cache(tmp_path / "cache.zarr")[0].attrs == {}
 
 
 # -- the layout of the store ---------------------------------------------------
@@ -212,33 +225,42 @@ def test_an_existing_store_is_replaced_only_when_asked(tmp_path, field):
 
 
 def test_prepared_samples_must_be_datasets(tmp_path, field):
-    dataset = raw_dataset(field)
-    dataset.prepare = lambda data: data["x"].a.values
+    class Values(XrDataset):
+        def prepare(self, data):
+            return data["x"].a.values
+
+    dataset = raw_dataset(field, cls=Values)
     with pytest.raises(TypeError, match="returns an xr.Dataset"):
         dataset.cache(tmp_path / "cache.zarr")
 
 
 def test_coordinates_must_be_the_same_for_every_sample(tmp_path, field):
-    dataset = raw_dataset(field)
-    dataset.prepare = lambda data: prepare(data).assign_coords(
-        day=("step", data["x"].time.values)
-    )
+    class Days(XrDataset):
+        def prepare(self, data):
+            return prepare(data).assign_coords(day=("step", data["x"].time.values))
+
+    dataset = raw_dataset(field, cls=Days)
     with pytest.raises(ValueError, match="has to be a data variable"):
         dataset.cache(tmp_path / "cache.zarr")
 
 
 def test_variables_must_have_the_same_shape_for_every_sample(tmp_path, field):
-    dataset = raw_dataset(field)
-    dataset.prepare = lambda data: prepare(data).isel(
-        step=slice(None, 1 + int(data["x"].a.notnull().all()))
-    )
+    class Shorter(XrDataset):
+        def prepare(self, data):
+            complete = int(data["x"].a.notnull().all())
+            return prepare(data).isel(step=slice(None, 1 + complete))
+
+    dataset = raw_dataset(field, cls=Shorter)
     with pytest.raises(ValueError, match="'x' of a prepared sample"):
         dataset.cache(tmp_path / "cache.zarr")
 
 
 def test_points_and_prepared_samples_must_not_share_names(tmp_path, field):
-    dataset = raw_dataset(field)
-    dataset.prepare = lambda data: prepare(data).assign(time=1.0)
+    class Clashing(XrDataset):
+        def prepare(self, data):
+            return prepare(data).assign(time=1.0)
+
+    dataset = raw_dataset(field, cls=Clashing)
     with pytest.raises(ValueError, match=r"both have \['time'\]"):
         dataset.cache(tmp_path / "cache.zarr")
 

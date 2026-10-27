@@ -102,19 +102,33 @@ def test_dropping_view_decides_when_views_are_mixed(source, times):
     assert dataset.indices.tolist() == list(range(30))  # only the last point is dropped
 
 
-def test_transform_receives_the_sample(source, times):
-    dataset = XrDataset(
-        PointGrid(time=times),
-        {"x": history(source)},
-        transform=lambda sample: sorted(sample),
-    )
-    assert dataset[0] == ["x"]
+def test_without_stages_the_sample_is_the_fetched_data(source, times):
+    dataset = XrDataset(PointGrid(time=times), {"x": history(source)})
+    xr.testing.assert_identical(dataset[0]["x"], source[["a"]].isel(time=[0, 1, 2]))
+
+
+class Names(XrDataset):
+    """Prepares the names of the views, and returns them sorted."""
+
+    def prepare(self, data):
+        return list(data)
+
+    def transform(self, sample):
+        return sorted(sample)
+
+
+def test_transform_receives_what_prepare_returns(source, times):
+    dataset = Names(PointGrid(time=times), {"y": history(source), "x": history(source)})
+    assert dataset[0] == ["x", "y"]
+
+
+class Tensors(XrDataset):
+    def transform(self, sample):
+        return ToTensors()(sample)
 
 
 def test_batches_through_a_dataloader(source, times):
-    dataset = XrDataset(
-        PointGrid(time=times), {"x": history(source)}, transform=ToTensors()
-    )
+    dataset = Tensors(PointGrid(time=times), {"x": history(source)})
     batch = next(iter(torch.utils.data.DataLoader(dataset, batch_size=5)))
 
     assert batch["x"].shape == (5, 1, 3, 4)  # batch, variable, time, lat
