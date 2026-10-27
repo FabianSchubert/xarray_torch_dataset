@@ -13,7 +13,9 @@ from typing import Any, Literal
 import numpy as np
 import torch
 import xarray as xr
+import zarr
 
+from xarray_torch_dataset.arguments import Description, describe
 from xarray_torch_dataset.base import Indexers, Point, View, XrDataset
 from xarray_torch_dataset.points import PointTable
 from xarray_torch_dataset.stores import (
@@ -27,6 +29,9 @@ SAMPLE_DIM = "sample"
 
 # the attribute of a cache store that says which of its arrays are what
 CACHE_ATTRIBUTE = "xarray_torch_dataset"
+
+# the group of a cache store that holds the arrays among the arguments
+ARGUMENTS_GROUP = "arguments"
 
 # Variables of at most this many bytes per sample, such as times or flags,
 # are held in memory while writing and stored as one chunk. Larger ones get
@@ -54,7 +59,11 @@ def write_cache(
     for every sample; something that differs between samples is a data
     variable. The labels of the points are written as one array per
     dimension of the points, along ``sample``.
-    `attrs` become the attributes of the store.
+    `attrs` become the attributes of the store. The arguments the dataset was
+    constructed with are recorded too, as `describe` describes them: their
+    plain values and what was left out in the attribute `CACHE_ATTRIBUTE`,
+    their arrays in the group `ARGUMENTS_GROUP`; `read_arguments` reads them
+    back.
 
     Variables of at most `SMALL_SAMPLE_BYTES` per sample are stored as one
     chunk; larger ones get one chunk per sample, and `samples_per_shard`
@@ -86,6 +95,7 @@ def write_cache(
         raise ValueError(f"Prepared samples must not have a {SAMPLE_DIM!r} dimension.")
 
     n = len(dataset)
+    arguments = describe(dataset.arguments)
     root = new_group(path)
     root.attrs.update(
         {
@@ -93,9 +103,14 @@ def write_cache(
             CACHE_ATTRIBUTE: {
                 "points": point_dims,
                 "coords": [str(c) for c in template.coords],
+                "arguments": arguments.values,
+                "left out": arguments.left_out,
             },
         }
     )
+    arrays = root.create_group(ARGUMENTS_GROUP)
+    for argument_path, values in arguments.arrays.items():
+        _write_whole(arrays, argument_path, values, None, {})
 
     # the points and the coordinates, which are known before reading
     for dim in point_dims:
@@ -149,6 +164,17 @@ def write_cache(
         _write_whole(
             root, str(name), values, [SAMPLE_DIM, *map(str, var.dims)], var.attrs
         )
+
+
+def read_arguments(path: str | Path) -> Description:
+    """The description of the arguments of the dataset that wrote a cache."""
+    recorded: Any = zarr.open_group(str(path), mode="r").attrs[CACHE_ATTRIBUTE]
+    arrays = zarr.open_group(str(path), path=ARGUMENTS_GROUP, mode="r")
+    return Description(
+        values=recorded["arguments"],
+        arrays={name: np.asarray(array[...]) for name, array in arrays.arrays()},
+        left_out=recorded["left out"],
+    )
 
 
 class CacheView(View):
@@ -244,7 +270,7 @@ def _missing(dtype: np.dtype) -> Any:
 
 
 def _write_whole(
-    group: Any, name: str, values: np.ndarray, dims: list[str], attrs: Mapping
+    group: Any, name: str, values: np.ndarray, dims: list[str] | None, attrs: Mapping
 ) -> None:
     """Write `values` as one array of a single chunk."""
     values = np.asarray(values)

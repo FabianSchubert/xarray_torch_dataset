@@ -13,7 +13,12 @@ from xarray_torch_dataset import (
     PointTable,
     XrDataset,
 )
-from xarray_torch_dataset.cache import CACHE_ATTRIBUTE
+from xarray_torch_dataset.arguments import describe
+from xarray_torch_dataset.cache import (
+    ARGUMENTS_GROUP,
+    CACHE_ATTRIBUTE,
+    read_arguments,
+)
 
 TIMES = np.arange("2020-01-01", "2020-01-11", dtype="datetime64[D]")  # 10 days
 N_LAT = 300  # a window of three days is 7.2 kB, more than a small variable
@@ -196,7 +201,8 @@ def test_layout_of_a_cache_store(tmp_path, field, per_shard):
         "time": ((n,), (n,), None, "datetime64[D]", 1),
         "lat": ((N_LAT,), (N_LAT,), None, "float64", 1),
     }
-    assert sorted(group.keys()) == sorted(expected)
+    assert sorted(group.array_keys()) == sorted(expected)
+    assert list(group.group_keys()) == [ARGUMENTS_GROUP]
     for name, (shape, chunks, shards, dtype, ndim) in expected.items():
         array = group[name]
         assert (array.shape, array.chunks, array.shards) == (shape, chunks, shards)
@@ -206,7 +212,9 @@ def test_layout_of_a_cache_store(tmp_path, field, per_shard):
     assert group["x"].attrs["units"] == "mm"
     files = [p for p in (tmp_path / "cache.zarr" / "x").rglob("*") if p.is_file()]
     assert len(files) - 1 == math.ceil(n / k)  # besides the description
-    assert group.attrs[CACHE_ATTRIBUTE] == {"points": ["time"], "coords": ["lat"]}
+    layout = group.attrs[CACHE_ATTRIBUTE]
+    assert (layout["points"], layout["coords"]) == (["time"], ["lat"])
+    assert set(layout["arguments"]) == {"points", "views", "rejected", "validate"}
     # what has not been written reads as missing
     assert np.isnan(group["x"].fill_value)
     assert np.isnat(group["last"].fill_value)
@@ -269,3 +277,36 @@ def test_a_store_that_is_not_a_cache_is_refused(tmp_path, field):
     field.to_zarr(tmp_path / "field.zarr", zarr_format=3, consolidated=False)
     with pytest.raises(ValueError, match="not a cache store"):
         CacheView(tmp_path / "field.zarr")
+
+
+# -- the arguments the dataset was constructed with ------------------------------
+
+
+class Described(Windows):
+    """A subclass whose arguments can all be described."""
+
+    def __init__(self, field, days, history=(-2, -1, 0), every=1):
+        view = OffsetView(
+            field, ["a"], offsets={"time": np.array(history) * DAY}, unavailable="fill"
+        )
+        super().__init__(PointTable(time=days[::every]), {"x": view})
+
+
+def test_the_arguments_are_recorded_with_the_cache(tmp_path, field):
+    dataset = Described(field, TIMES, every=2)
+    dataset.cache(tmp_path / "cache.zarr")
+    recorded = read_arguments(tmp_path / "cache.zarr")
+    described = describe(dataset.arguments)
+
+    assert recorded.values == described.values
+    assert recorded.values["every"] == 2
+    assert recorded.arrays.keys() == described.arrays.keys() == {"days"}
+    np.testing.assert_array_equal(recorded.arrays["days"], TIMES)
+    # the field is an xarray object, which is left out
+    assert recorded.left_out == described.left_out == ["field"]
+
+
+def test_the_arguments_do_not_disturb_reading_the_cache(tmp_path, field):
+    dataset = Described(field, TIMES)
+    dataset.cache(tmp_path / "cache.zarr")
+    assert_same_samples(dataset, Described.from_cache(tmp_path / "cache.zarr"))
