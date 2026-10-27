@@ -11,6 +11,7 @@ positional selection on their source; the dataset keeps only the points
 that every view can serve.
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
@@ -386,7 +387,25 @@ class XrDataset(Dataset):
     ``validate=False`` skips that check, which takes time on many points.
     Every point is then kept, `n_rejected` is ``None``, and a point that a
     view would have rejected raises an ``IndexError`` when it is fetched.
+
+    `arguments` holds the arguments the dataset was constructed with, by the
+    names of the parameters of ``__init__`` and with their defaults, for any
+    subclass, without it having to record them.
     """
+
+    arguments: dict[str, Any]
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        dataset = super().__new__(cls)
+        # empty when created without arguments, as by pickling, which then
+        # restores the recorded ones, or by `from_cache`
+        dataset.arguments = {}
+        if args or kwargs:
+            bound = inspect.signature(cls.__init__).bind(dataset, *args, **kwargs)
+            bound.apply_defaults()
+            # every parameter but the first, the instance itself
+            dataset.arguments = dict(list(bound.arguments.items())[1:])
+        return dataset
 
     def __init__(
         self,

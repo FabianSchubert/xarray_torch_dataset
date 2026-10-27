@@ -1,3 +1,5 @@
+import pickle
+
 import numpy as np
 import pytest
 import torch
@@ -167,3 +169,41 @@ def test_labels_are_collected_without_reading(source, times):
     dataset = XrDataset(PointGrid(time=times), {"x": Unreadable(source)})
     np.testing.assert_array_equal(dataset.labels("x")["time"], times)
     assert dataset.available("x").all()
+
+
+# -- the arguments of the constructor -------------------------------------------
+
+
+class Days(XrDataset):
+    """A subclass with its own arguments, one of them with a default."""
+
+    def __init__(self, source, times, step=1):
+        super().__init__(PointGrid(time=times[::step]), {"x": history(source)})
+
+
+def test_the_arguments_of_a_subclass_are_recorded_with_defaults(source, times):
+    by_position = Days(source, times)
+    by_name = Days(times=times, source=source, step=2)
+
+    assert list(by_position.arguments) == ["source", "times", "step"]
+    assert by_position.arguments["source"] is source
+    assert by_position.arguments["step"] == 1
+    assert by_name.arguments["step"] == 2
+    assert by_name.arguments["times"] is times
+
+
+def test_a_plain_dataset_records_its_own_arguments(source, times):
+    points = PointGrid(time=times)
+    dataset = XrDataset(points, {"x": history(source)}, validate=False)
+
+    assert list(dataset.arguments) == ["points", "views", "rejected", "validate"]
+    assert dataset.arguments["points"] is points
+    assert dataset.arguments["rejected"] == "drop"
+    assert dataset.arguments["validate"] is False
+
+
+def test_the_arguments_survive_pickling(source, times):
+    """DataLoader workers receive the dataset pickled."""
+    again = pickle.loads(pickle.dumps(Days(source, times, step=3)))
+    assert again.arguments["step"] == 3
+    np.testing.assert_array_equal(again.arguments["times"], times)
