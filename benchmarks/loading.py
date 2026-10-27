@@ -18,6 +18,14 @@ import xarray as xr
 
 from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
+
+class Tensors(XrDataset):
+    """The data of the views, as tensors."""
+
+    def transform(self, sample):
+        return ToTensors()(sample)
+
+
 HISTORY = np.arange(-3, 1) * np.timedelta64(1, "h")
 BATCH = 32
 
@@ -34,7 +42,7 @@ def build(ds):
         "y": OffsetView(ds, ["t2m"]),
     }
     points = PointGrid(time=ds.time.values)
-    return XrDataset(points, views, transform=ToTensors())
+    return Tensors(points, views)
 
 
 def loaders(stores, backends):

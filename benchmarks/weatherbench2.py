@@ -39,6 +39,13 @@ BATCH = 32
 HOUR = np.timedelta64(1, "h")
 
 
+class Tensors(XrDataset):
+    """The data of the views, as tensors."""
+
+    def transform(self, sample):
+        return ToTensors()(sample)
+
+
 class ValidTimeView(View):
     """An analysis at the point's valid time (init time plus lead time)."""
 
@@ -74,10 +81,9 @@ def build(source, validate=True):
         ),
         "target": ValidTimeView(era5, ["2m_temperature"]),
     }
-    return XrDataset(
+    return Tensors(
         PointGrid(init_time=init_times.astype("datetime64[ns]"), lead_time=lead_times),
         views,
-        transform=ToTensors(),
         validate=validate,
     )
 

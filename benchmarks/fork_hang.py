@@ -21,6 +21,14 @@ import xarray as xr
 
 from xarray_torch_dataset import OffsetView, PointGrid, ToTensors, XrDataset
 
+
+class Tensors(XrDataset):
+    """The data of the views, as tensors."""
+
+    def transform(self, sample):
+        return ToTensors()(sample)
+
+
 path, backend, method, touch = sys.argv[1:5]
 faulthandler.enable()
 
@@ -32,7 +40,7 @@ def main():
         ds = xr.open_zarr(path, consolidated=False)
     history = np.arange(-3, 1) * np.timedelta64(1, "h")
     views = {"x": OffsetView(ds, ["t2m", "u10"], offsets={"time": history})}
-    dataset = XrDataset(PointGrid(time=ds.time.values), views, transform=ToTensors())
+    dataset = Tensors(PointGrid(time=ds.time.values), views)
     if touch == "1":
         dataset[0]
     loader = torch.utils.data.DataLoader(
