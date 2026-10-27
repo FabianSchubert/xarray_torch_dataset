@@ -26,6 +26,13 @@ def fancy_noise(shape, betas, rng=None):
     return out / out.std()
 
 
+class Forecasts(XrDataset):
+    """The forecasts of the views, as tensors."""
+
+    def transform(self, sample):
+        return ToTensors()(sample)
+
+
 if __name__ == "__main__":
     init_times_1h = np.arange(
         "2024-10-01T00:00", "2024-10-03T00:00", dtype="datetime64[h]"
@@ -56,7 +63,7 @@ if __name__ == "__main__":
 
     points = PointGrid(init_time=init_times_1h, lead_time=lead_times)
 
-    dataset = XrDataset(
+    dataset = Forecasts(
         points=points,
         views={
             "fc_1h": FindLatestForecastView(
@@ -78,7 +85,6 @@ if __name__ == "__main__":
                 unavailable="fill",
             ),
         },
-        transform=ToTensors(),
     )
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=4)

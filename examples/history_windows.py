@@ -1,7 +1,8 @@
 """
 Windows along a time axis: a dataset built from points, views and a
-transform. The inputs are the last four days and the same weekday in the
-two previous weeks; the target is the point's own day.
+transform, the method of a subclass. The inputs are the last four days and
+the same weekday in the two previous weeks; the target is the point's own
+day.
 """
 
 import numpy as np
@@ -14,6 +15,14 @@ from xarray_torch_dataset import (
     ToTensors,
     XrDataset,
 )
+
+
+class Windows(XrDataset):
+    """The windows of the views, as tensors."""
+
+    def transform(self, sample):
+        return ToTensors()(sample)
+
 
 if __name__ == "__main__":
     times = np.arange("2020-01-01", "2020-02-01", dtype="datetime64[D]")
@@ -39,14 +48,13 @@ if __name__ == "__main__":
     last_four_days = np.arange(-3, 1) * day
     same_weekday = np.array([-14, -7]) * day
 
-    dataset = XrDataset(
+    dataset = Windows(
         points=points,
         views={
             "x": OffsetView(inputs, ["t2m", "u10"], offsets={"time": last_four_days}),
             "x_weekly": OffsetView(inputs, ["t2m"], offsets={"time": same_weekday}),
             "y": OffsetView(targets, ["precip"]),
         },
-        transform=ToTensors(),
     )
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=4)

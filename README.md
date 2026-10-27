@@ -32,7 +32,7 @@ flowchart LR
 
 - A **point** says where a sample is, as coordinate labels: `{"time": np.datetime64("2020-01-05")}`.
 - A **view** says what to read from one xarray source for a point, for example the four time steps up to the point. Each source gets its own view, so sources with different grids or resolutions can be combined.
-- A **transform** turns the fetched xarray data into what the model needs, usually tensors.
+- A **transform**, a method of the dataset, turns the fetched xarray data into what the model needs, usually tensors.
 
 Views only compute positions; they do not read. The dataset can therefore check at construction which points every view can serve, and it keeps only those.
 
@@ -65,7 +65,13 @@ targets = xr.Dataset(
 
 last_four_days = np.arange(-3, 1) * np.timedelta64(1, "D")
 
-dataset = XrDataset(
+
+class Weather(XrDataset):
+    def transform(self, sample):
+        return ToTensors()(sample)
+
+
+dataset = Weather(
     points=PointGrid(time=times),
     views={
         # the point's day and the three days before it
@@ -73,7 +79,6 @@ dataset = XrDataset(
         # the point's day only
         "y": OffsetView(targets, ["precip"]),
     },
-    transform=ToTensors(),
 )
 
 print(len(dataset))  # 28: the first three days have no full history
@@ -124,11 +129,11 @@ Whether a view has all data for a point, and which labels it selects, can be ask
 
 All of this is only about data the source does not have: NaN values stored in a source are returned as they are, and a point that lacks a label a view needs is an error.
 
-**Transforms.** A transform receives `{view name: xr.Dataset}` and returns the sample. The data is already in memory at that point: reading is the views' job, and a transform only reshapes what was read. Because it gets xarray objects, it can use names, dimensions and coordinates to build what the model needs.
+**Transforms.** A subclass of `XrDataset` overrides the method `transform(sample)`, which receives `{view name: xr.Dataset}` and returns the sample. The data is already in memory at that point: reading is the views' job, and a transform only reshapes what was read. Because it gets xarray objects, it can use names, dimensions and coordinates to build what the model needs. A second method, `prepare`, can do the expensive part of that work before `transform`, so that it can be cached (see "Caching samples").
 
-`ToTensors` is the one included. It stacks the variables of each view into one `float32` tensor, variables first, and keeps only the values. The variables of a view must have the same dimensions; it raises otherwise instead of broadcasting them.
+`ToTensors` is the one transform included, to be called from `transform`. It stacks the variables of each view into one `float32` tensor, variables first, and keeps only the values. The variables of a view must have the same dimensions; it raises otherwise instead of broadcasting them.
 
-A `DataLoader` needs a transform that returns tensors or arrays, because torch cannot batch xarray objects. Without a transform, `dataset[i]` returns the xarray data itself, which is useful for looking at samples.
+A `DataLoader` needs a transform that returns tensors or arrays, because torch cannot batch xarray objects. A plain `XrDataset`, which overrides nothing, returns the xarray data itself, which is useful for looking at samples.
 
 ## Writing a view
 
@@ -168,21 +173,21 @@ class DayBeforeView(View):
 
 ## Caching samples
 
-Reading and reducing the sources can take much longer than training on the result. A cache stores the expensive part once. For that, a dataset takes its transform in two stages:
+Reading and reducing the sources can take much longer than training on the result. A cache stores the expensive part once. For that, a subclass of `XrDataset` overrides two methods:
 
-- `prepare` does the expensive part and returns one `xr.Dataset` per sample, the **prepared sample**: for example the mean and spread over the members of an ensemble.
-- `transform` turns a prepared sample into what the model gets: for example tensors, or a lead time shifted for an experiment.
+- `prepare(data)` does the expensive part and returns one `xr.Dataset` per sample, the **prepared sample**: for example the mean and spread over the members of an ensemble.
+- `transform(sample)` turns a prepared sample into what the model gets: for example tensors.
 
-`dataset.cache(path)` writes the prepared sample of every point. `XrDataset.from_cache(path, transform=...)` reads them back, one row per point, so that the dataset on the cache has the same samples as the one on the sources:
+`dataset.cache(path)` writes the prepared sample of every point. `Subclass.from_cache(path)` reads them back, one row per point, into an instance of the same class, so that its `transform` gives the same samples as the dataset on the sources:
 
 ```mermaid
 flowchart LR
-    subgraph raw["XrDataset(points, views, transform, prepare)"]
+    subgraph raw["Subclass(...): from the sources"]
         views["views<br/>{name: xr.Dataset}"] --> prepare["prepare<br/>the expensive part"]
     end
     prepare -- "prepared sample: xr.Dataset" --> transform["transform<br/>the cheap part"]
     prepare -. "dataset.cache(path)" .-> store[("cache store<br/>one row per point")]
-    store -- "XrDataset.from_cache(path, transform)" --> transform
+    store -- "Subclass.from_cache(path)" --> transform
     transform --> sample["sample"]
 ```
 
@@ -200,26 +205,28 @@ members = xr.Dataset(
 )
 
 
-def prepare(data):
-    """The expensive part: the mean and spread over the members."""
-    t2m = data["x"].t2m
-    return xr.Dataset({"mean": t2m.mean("member"), "std": t2m.std("member")}).drop_vars(
-        "time"
-    )
+class Ensemble(XrDataset):
+    def __init__(self, members):
+        super().__init__(PointGrid(time=times), {"x": OffsetView(members, ["t2m"])})
+
+    def prepare(self, data):
+        """The expensive part: the mean and spread over the members."""
+        t2m = data["x"].t2m
+        return xr.Dataset(
+            {"mean": t2m.mean("member"), "std": t2m.std("member")}
+        ).drop_vars("time")
+
+    def transform(self, sample):
+        """The cheap part: the tensor the model gets."""
+        return torch.from_numpy(
+            np.stack([sample["mean"].values, sample["std"].values])
+        ).float()
 
 
-def finish(prepared):
-    """The cheap part: the tensor the model gets."""
-    return torch.from_numpy(
-        np.stack([prepared["mean"].values, prepared["std"].values])
-    ).float()
-
-
-views = {"x": OffsetView(members, ["t2m"])}
-raw = XrDataset(PointGrid(time=times), views, transform=finish, prepare=prepare)
+raw = Ensemble(members)
 raw.cache("t2m.zarr")
 
-cached = XrDataset.from_cache("t2m.zarr", transform=finish)
+cached = Ensemble.from_cache("t2m.zarr")
 assert all(torch.equal(raw[i], cached[i]) for i in range(len(raw)))
 ```
 
@@ -230,9 +237,9 @@ What a prepared sample may hold:
 
 The store is a zarr 3 store that xarray and plain zarr can read. Large variables get one chunk per sample and several samples per file (a shard, about 1 GB by default), small ones such as times are one chunk. The labels of the points are stored too, one array per dimension of the points, and the `attrs` of `cache(path, attrs=...)` become the attributes of the store, for example the settings it was written with, to check before using it (`CacheView(path).attrs`).
 
-`from_cache` reads every point of the cache, in their order. `from_cache(path, points=...)` reads those points instead; a point the cache does not hold is rejected, or raises with `rejected="raise"`. It returns an `XrDataset` also when called on a subclass, as a subclass is built from its sources, which a cached dataset does not have. `CacheView(path)` is the view underneath, for reading the rows of a cache directly; its rows also have the point's labels as coordinates.
+`from_cache` reads every point of the cache, in their order. `from_cache(path, points=...)` reads those points instead; a point the cache does not hold is rejected, or raises with `rejected="raise"`. The instance it returns is not built by `__init__`, which opens the sources a cached dataset does not need. So `transform` must not use what `__init__` sets. `CacheView(path)` is the view underneath, for reading the rows of a cache directly; its rows also have the point's labels as coordinates.
 
-`dataset.cache(path, num_workers=4, multiprocessing_context="forkserver")` reads with DataLoader workers. Start them with `forkserver` rather than by forking, as zarr runs threads that a forked worker may deadlock on; the views and `prepare` then have to be importable from a module.
+`dataset.cache(path, num_workers=4, multiprocessing_context="forkserver")` reads with DataLoader workers. Start them with `forkserver` rather than by forking, as zarr runs threads that a forked worker may deadlock on; the dataset's class and views then have to be importable from a module.
 
 ## Reading from zarr
 
