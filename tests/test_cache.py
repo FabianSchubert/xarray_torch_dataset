@@ -310,3 +310,51 @@ def test_the_arguments_do_not_disturb_reading_the_cache(tmp_path, field):
     dataset = Described(field, TIMES)
     dataset.cache(tmp_path / "cache.zarr")
     assert_same_samples(dataset, Described.from_cache(tmp_path / "cache.zarr"))
+
+
+def arguments_of(field, **changes):
+    """The arguments of a `Described`, with some changed."""
+    return {"field": field, "days": TIMES} | changes
+
+
+def test_a_cache_is_read_with_the_arguments_it_was_written_with(tmp_path, field):
+    Described(**arguments_of(field, every=2)).cache(tmp_path / "cache.zarr")
+    with pytest.warns(UserWarning, match="field cannot be described"):
+        cached = Described.from_cache(
+            tmp_path / "cache.zarr", arguments=arguments_of(field, every=2)
+        )
+    # with the defaults of the constructor, as a dataset built from them has
+    assert cached.arguments == Described(**arguments_of(field, every=2)).arguments
+
+
+def test_a_default_given_explicitly_is_the_same_argument(tmp_path, field):
+    Described(**arguments_of(field)).cache(tmp_path / "cache.zarr")
+    with pytest.warns(UserWarning, match="field"):
+        Described.from_cache(
+            tmp_path / "cache.zarr",
+            arguments=arguments_of(field, history=(-2, -1, 0), every=1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        ({"every": 2}, "every"),
+        ({"days": TIMES[:-1]}, "days"),
+        ({"history": (-1, 0)}, "history"),
+    ],
+)
+def test_other_arguments_than_those_of_the_cache_raise(tmp_path, field, changes, named):
+    Described(**arguments_of(field)).cache(tmp_path / "cache.zarr")
+    with pytest.raises(ValueError, match=f"other arguments than those given: {named}"):
+        Described.from_cache(
+            tmp_path / "cache.zarr", arguments=arguments_of(field, **changes)
+        )
+
+
+def test_without_arguments_the_recorded_description_is_kept(tmp_path, field):
+    dataset = Described(**arguments_of(field, every=2))
+    dataset.cache(tmp_path / "cache.zarr")
+    cached = Described.from_cache(tmp_path / "cache.zarr")
+    assert cached.arguments == describe(dataset.arguments).values
+    assert cached.arguments["every"] == 2

@@ -12,6 +12,7 @@ that every view can serve.
 """
 
 import inspect
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
@@ -363,6 +364,14 @@ def _as_float(ds: xr.Dataset, coords: Sequence[Hashable]) -> xr.Dataset:
     return ds.assign_coords(as_float) if as_float else ds
 
 
+def _bound(cls: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """The arguments of the constructor of `cls`, by name and with defaults."""
+    bound = inspect.signature(cls.__init__).bind(None, *args, **kwargs)
+    bound.apply_defaults()
+    # every parameter but the first, the instance itself
+    return dict(list(bound.arguments.items())[1:])
+
+
 class XrDataset(Dataset):
     """Serves, for each accepted point, ``transform(prepare(data))``.
 
@@ -378,7 +387,8 @@ class XrDataset(Dataset):
     `cache` stores the prepared samples, and `from_cache` reads them back
     into an instance of the same class, whose `transform` then gives the
     same samples. As such an instance is not built by ``__init__``,
-    `transform` must not use what ``__init__`` sets.
+    `transform` must not use what ``__init__`` sets, but may use
+    `arguments`, which `from_cache` sets from the arguments it checks.
 
     Points that some view rejects are dropped at construction, or
     reported if ``rejected="raise"``. `n_rejected` says how many points
@@ -399,12 +409,7 @@ class XrDataset(Dataset):
         dataset = super().__new__(cls)
         # empty when created without arguments, as by pickling, which then
         # restores the recorded ones, or by `from_cache`
-        dataset.arguments = {}
-        if args or kwargs:
-            bound = inspect.signature(cls.__init__).bind(dataset, *args, **kwargs)
-            bound.apply_defaults()
-            # every parameter but the first, the instance itself
-            dataset.arguments = dict(list(bound.arguments.items())[1:])
+        dataset.arguments = _bound(cls, *args, **kwargs) if args or kwargs else {}
         return dataset
 
     def __init__(
@@ -530,6 +535,7 @@ class XrDataset(Dataset):
     def from_cache(
         cls,
         path: str | Path,
+        arguments: Mapping[str, Any] | None = None,
         points: Points | None = None,
         rejected: Literal["drop", "raise"] = "drop",
     ) -> Self:
@@ -539,11 +545,40 @@ class XrDataset(Dataset):
         `points` reads part of the cache, by default all of it; a point the
         cache lacks is rejected as by any view. The instance is not built by
         ``__init__``, whose sources a cached dataset does not need.
+
+        `arguments` are those the dataset would be constructed with, by name.
+        Described as the cache describes the arguments it was written with,
+        they have to match those, or a ``ValueError`` names where they
+        differ; what cannot be described is not compared, with a warning.
+        They become `self.arguments`, with the defaults of ``__init__``.
+        Without them, `self.arguments` is the description the cache holds.
         """
-        from xarray_torch_dataset.cache import CacheView
+        from xarray_torch_dataset.arguments import describe, differences
+        from xarray_torch_dataset.cache import CacheView, read_arguments
+
+        recorded = read_arguments(path)
+        if arguments is None:
+            bound = recorded.values
+        else:
+            bound = _bound(cls, **arguments)
+            given = describe(bound)
+            differing = differences(recorded, given)
+            if differing:
+                raise ValueError(
+                    f"The cache {path} was written with other arguments than "
+                    f"those given: {', '.join(differing)}."
+                )
+            unchecked = sorted(set(recorded.left_out) | set(given.left_out))
+            if unchecked:
+                warnings.warn(
+                    f"The arguments {', '.join(unchecked)} cannot be described, "
+                    f"so they were not checked against the cache {path}.",
+                    stacklevel=2,
+                )
 
         view = CacheView(path)
         dataset = cls.__new__(cls)
+        dataset.arguments = bound
         XrDataset.__init__(
             dataset,
             view.points if points is None else points,
