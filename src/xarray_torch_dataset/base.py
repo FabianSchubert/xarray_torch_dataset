@@ -588,3 +588,21 @@ class XrDataset(Dataset):
             validate=points is not None,
         )
         return dataset
+
+    @classmethod
+    def open(cls, cache: str | Path | None = None, **arguments: Any) -> Self:
+        """The dataset of `arguments`, from its cache if `cache` exists.
+
+        An existing cache is read with `from_cache`, which checks it against
+        the `arguments`. Otherwise the dataset is constructed from them, with
+        a warning if `cache` is given, so that it can be written there.
+        """
+        if cache is not None and Path(cache).exists():
+            return cls.from_cache(cache, arguments=arguments)
+        if cache is not None:
+            warnings.warn(
+                f"The cache {cache} does not exist yet, so the dataset is read from "
+                "its sources. Write it with `cache()` to read it faster.",
+                stacklevel=2,
+            )
+        return cls(**arguments)

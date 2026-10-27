@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -358,3 +359,29 @@ def test_without_arguments_the_recorded_description_is_kept(tmp_path, field):
     cached = Described.from_cache(tmp_path / "cache.zarr")
     assert cached.arguments == describe(dataset.arguments).values
     assert cached.arguments["every"] == 2
+
+
+# -- the cache if there is one, else the sources ---------------------------------
+
+
+def test_open_reads_an_existing_cache_and_checks_it(tmp_path, field):
+    Described(**arguments_of(field, every=2)).cache(tmp_path / "cache.zarr")
+    with pytest.warns(UserWarning, match="field"):
+        opened = Described.open(tmp_path / "cache.zarr", **arguments_of(field, every=2))
+    assert opened.cached
+    with pytest.raises(ValueError, match="other arguments than those given: every"):
+        Described.open(tmp_path / "cache.zarr", **arguments_of(field))
+
+
+def test_open_builds_the_dataset_when_the_cache_is_missing(tmp_path, field):
+    with pytest.warns(UserWarning, match="does not exist yet"):
+        opened = Described.open(tmp_path / "none.zarr", **arguments_of(field))
+    assert not opened.cached
+    assert_same_samples(opened, Described(**arguments_of(field)))
+
+
+def test_open_without_a_cache_builds_the_dataset_quietly(field):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        opened = Described.open(**arguments_of(field))
+    assert not opened.cached
